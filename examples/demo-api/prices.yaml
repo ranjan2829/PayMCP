@@ -1,0 +1,11 @@
+version: 1
+operations:
+  - operationId: echoMessage
+    amount: "10000"
+    description: Echo one JSON payload
+  - operationId: getWeather
+    amount: "25000"
+    description: Weather lookup
+  - operationId: health
+    amount: "0"
+    paid: false

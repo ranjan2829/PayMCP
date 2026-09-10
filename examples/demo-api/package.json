@@ -1,0 +1,23 @@
+{
+  "name": "@paymcp/demo-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js",
+    "demo": "node ../../scripts/demo.mjs",
+    "test": "node --import tsx --test src/server.test.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1",
+    "openapi-to-paymcp": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "name": "openapi-to-paymcp",
+  "version": "0.1.0",
+  "description": "Compile an OpenAPI spec into a paid MCP server with real x402 facilitator settlement",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./middleware": {
+      "types": "./dist/middleware/index.d.ts",
+      "import": "./dist/middleware/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "paymcp": "./bin/paymcp.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ranjan2829/PayMCP.git",
+    "directory": "packages/paymcp"
+  },
+  "homepage": "https://github.com/ranjan2829/PayMCP#readme",
+  "bugs": {
+    "url": "https://github.com/ranjan2829/PayMCP/issues"
+  },
+  "keywords": [
+    "x402",
+    "mcp",
+    "openapi",
+    "payments",
+    "facilitator",
+    "usdc",
+    "base"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^11.8.1",
+    "fastify": "^5.2.1",
+    "fastify-plugin": "^6.0.0",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.24.2"
+  },
+  "optionalDependencies": {
+    "pg": "^8.14.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.10",
+    "@types/pg": "^8.11.11",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

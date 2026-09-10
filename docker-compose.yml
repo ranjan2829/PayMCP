@@ -1,0 +1,32 @@
+services:
+  demo-api:
+    build: .
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      # Uncomment to use Postgres ledger:
+      # PAYMCP_DATABASE_URL: postgres://paymcp:paymcp@postgres:5432/paymcp
+    volumes:
+      - demo-ledger:/app/examples/demo-api
+    depends_on: []
+    restart: unless-stopped
+
+  # Optional Postgres ledger backend
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: paymcp
+  #     POSTGRES_PASSWORD: paymcp
+  #     POSTGRES_DB: paymcp
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+
+volumes:
+  demo-ledger:
+  # pgdata:
