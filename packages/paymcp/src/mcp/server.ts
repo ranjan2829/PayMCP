@@ -19,12 +19,21 @@ import {
   decodeHeaderPayload,
 } from "../headers/codec.js";
 import { parsePaymentPayload } from "../headers/validate.js";
-import { FacilitatorSettler } from "../settler/facilitator.js";
+import {
+  FacilitatorSettler,
+  FacilitatorHttpError,
+  FacilitatorTransportError,
+} from "../settler/facilitator.js";
 import { buildPaymentRequired, buildResource } from "../settler/challenge.js";
 import { deriveIdempotencyKey } from "../ledger/sqlite.js";
 import { createLedger } from "../ledger/create.js";
 import type { Ledger } from "../ledger/types.js";
-import type { PaymentAccept } from "../types/x402.js";
+import type {
+  PaymentAccept,
+  PaymentPayload,
+  PaymentRequired,
+  SettlementResponse,
+} from "../types/x402.js";
 
 export interface PaidMcpServerOptions {
   readonly config: PaymcpEnvConfig;
@@ -84,7 +93,7 @@ export async function createPaidMcpServer(
 
     const paidCheck = isOperationPaid(options.prices, op.operationId);
     if (paidCheck.paid) {
-      const payResult = await enforcePayment({
+      const payResult = await preparePayment({
         op,
         price: paidCheck.price,
         args,
@@ -99,23 +108,154 @@ export async function createPaidMcpServer(
       if (payResult.kind === "error") {
         return textResult(payResult.message, true);
       }
-      // settled — fall through to upstream call, attach settlement meta
-      const upstream = await callUpstream(op, args, options.upstreamBaseUrl, fetchImpl);
+
+      // Payment verified (or already settled) — call upstream first; settle only on 2xx.
+      const upstream = await callUpstream(
+        op,
+        args,
+        options.upstreamBaseUrl,
+        fetchImpl,
+      );
+
+      if (payResult.priorSettlement !== undefined) {
+        return textResult(
+          JSON.stringify(
+            {
+              settlement: payResult.priorSettlement,
+              data: upstream.body,
+              status: upstream.status,
+            },
+            null,
+            2,
+          ),
+          upstream.status >= 400,
+        );
+      }
+
+      const is2xx = upstream.status >= 200 && upstream.status < 300;
+      if (!is2xx) {
+        await ledger.recordSettlement({
+          idempotencyKey: payResult.clientIdem,
+          operationId: op.operationId,
+          amount: paidCheck.price.amount,
+          network: payResult.accept.network,
+          payer: "",
+          transaction: "",
+          status: "failed",
+          errorReason: `upstream_http_${upstream.status}`,
+        });
+        return textResult(
+          JSON.stringify(
+            {
+              error: "upstream_failed",
+              data: upstream.body,
+              status: upstream.status,
+              settlement: null,
+            },
+            null,
+            2,
+          ),
+          true,
+        );
+      }
+
+      let settlement: SettlementResponse;
+      try {
+        settlement = await settler.settle({
+          paymentPayload: payResult.paymentPayload,
+          paymentRequirements: payResult.accept,
+        });
+      } catch (err) {
+        const message =
+          err instanceof FacilitatorHttpError ||
+          err instanceof FacilitatorTransportError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "facilitator_error";
+        return textResult(
+          JSON.stringify(
+            {
+              error: "facilitator_unavailable",
+              detail: message,
+              data: upstream.body,
+              status: upstream.status,
+            },
+            null,
+            2,
+          ),
+          true,
+        );
+      }
+
+      if (!settlement.success) {
+        await ledger.recordSettlement({
+          idempotencyKey: payResult.clientIdem,
+          operationId: op.operationId,
+          amount: paidCheck.price.amount,
+          network: settlement.network,
+          payer: settlement.payer,
+          transaction: settlement.transaction,
+          status: "failed",
+          ...(settlement.errorReason !== undefined
+            ? { errorReason: settlement.errorReason }
+            : {}),
+        });
+        return textResult(
+          JSON.stringify(
+            {
+              error: "payment_failed",
+              status: 402,
+              reason: settlement.errorReason ?? "settlement_failed",
+              headers: {
+                [HEADER_PAYMENT_RESPONSE]: encodeHeaderPayload(settlement),
+                [HEADER_PAYMENT_REQUIRED]: encodeHeaderPayload(
+                  payResult.required,
+                ),
+              },
+            },
+            null,
+            2,
+          ),
+          true,
+        );
+      }
+
+      await ledger.recordSettlement({
+        idempotencyKey: payResult.clientIdem,
+        operationId: op.operationId,
+        amount: paidCheck.price.amount,
+        network: settlement.network,
+        payer: settlement.payer,
+        transaction: settlement.transaction,
+        status: "settled",
+      });
+
       return textResult(
         JSON.stringify(
           {
-            settlement: payResult.settlement,
+            settlement: {
+              success: true as const,
+              transaction: settlement.transaction,
+              network: settlement.network,
+              payer: settlement.payer,
+            },
             data: upstream.body,
             status: upstream.status,
           },
           null,
           2,
         ),
-        upstream.status >= 400,
+        false,
       );
     }
 
-    const upstream = await callUpstream(op, args, options.upstreamBaseUrl, fetchImpl);
+    const upstream = await callUpstream(
+      op,
+      args,
+      options.upstreamBaseUrl,
+      fetchImpl,
+    );
     return textResult(
       JSON.stringify({ data: upstream.body, status: upstream.status }, null, 2),
       upstream.status >= 400,
@@ -125,7 +265,9 @@ export async function createPaidMcpServer(
   return server;
 }
 
-export async function runPaidMcpStdio(options: PaidMcpServerOptions): Promise<void> {
+export async function runPaidMcpStdio(
+  options: PaidMcpServerOptions,
+): Promise<void> {
   const server = await createPaidMcpServer(options);
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -177,9 +319,17 @@ function operationToTool(op: CompiledOperation, prices: PriceTable): Tool {
   };
 }
 
-async function enforcePayment(args: {
+/**
+ * Validate payment + early verify. Does NOT settle — settlement happens only
+ * after a successful (2xx) upstream/tool result.
+ */
+async function preparePayment(args: {
   readonly op: CompiledOperation;
-  readonly price: { readonly amount: string; readonly description?: string; readonly operationId: string };
+  readonly price: {
+    readonly amount: string;
+    readonly description?: string;
+    readonly operationId: string;
+  };
   readonly args: Record<string, unknown>;
   readonly config: PaymcpEnvConfig;
   readonly settler: FacilitatorSettler;
@@ -189,8 +339,12 @@ async function enforcePayment(args: {
   | { kind: "challenge"; message: string }
   | { kind: "error"; message: string }
   | {
-      kind: "settled";
-      settlement: {
+      kind: "ready";
+      paymentPayload: PaymentPayload;
+      accept: PaymentAccept;
+      required: PaymentRequired;
+      clientIdem: string;
+      priorSettlement?: {
         success: true;
         transaction: string;
         network: string;
@@ -232,7 +386,7 @@ async function enforcePayment(args: {
     };
   }
 
-  let paymentPayload;
+  let paymentPayload: PaymentPayload;
   try {
     paymentPayload = decodeHeaderPayload(sig, parsePaymentPayload);
   } catch (err) {
@@ -266,8 +420,12 @@ async function enforcePayment(args: {
   const existing = await args.ledger.findByIdempotencyKey(clientIdem);
   if (existing !== undefined && existing.status === "settled") {
     return {
-      kind: "settled",
-      settlement: {
+      kind: "ready",
+      paymentPayload,
+      accept,
+      required,
+      clientIdem,
+      priorSettlement: {
         success: true,
         transaction: existing.transaction,
         network: existing.network,
@@ -276,23 +434,29 @@ async function enforcePayment(args: {
     };
   }
 
-  const settlement = await args.settler.verifyAndSettle({
-    paymentPayload,
-    paymentRequirements: accept,
-  });
+  let verification;
+  try {
+    verification = await args.settler.verify({
+      paymentPayload,
+      paymentRequirements: accept,
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "facilitator_unavailable";
+    return { kind: "error", message: `facilitator_unavailable: ${message}` };
+  }
 
-  if (!settlement.success) {
+  if (!verification.isValid) {
+    const reason = verification.invalidReason ?? "payment_invalid";
     await args.ledger.recordSettlement({
       idempotencyKey: clientIdem,
       operationId: args.op.operationId,
       amount: args.price.amount,
-      network: settlement.network,
-      payer: settlement.payer,
-      transaction: settlement.transaction,
+      network: accept.network,
+      payer: verification.payer ?? "",
+      transaction: "",
       status: "failed",
-      ...(settlement.errorReason !== undefined
-        ? { errorReason: settlement.errorReason }
-        : {}),
+      errorReason: reason,
     });
     return {
       kind: "challenge",
@@ -300,11 +464,8 @@ async function enforcePayment(args: {
         {
           error: "payment_failed",
           status: 402,
-          reason: settlement.errorReason ?? "settlement_failed",
-          headers: {
-            [HEADER_PAYMENT_RESPONSE]: encodeHeaderPayload(settlement),
-            [HEADER_PAYMENT_REQUIRED]: encodeHeaderPayload(required),
-          },
+          reason,
+          paymentRequired: required,
         },
         null,
         2,
@@ -312,24 +473,12 @@ async function enforcePayment(args: {
     };
   }
 
-  await args.ledger.recordSettlement({
-    idempotencyKey: clientIdem,
-    operationId: args.op.operationId,
-    amount: args.price.amount,
-    network: settlement.network,
-    payer: settlement.payer,
-    transaction: settlement.transaction,
-    status: "settled",
-  });
-
   return {
-    kind: "settled",
-    settlement: {
-      success: true,
-      transaction: settlement.transaction,
-      network: settlement.network,
-      payer: settlement.payer,
-    },
+    kind: "ready",
+    paymentPayload,
+    accept,
+    required,
+    clientIdem,
   };
 }
 
@@ -403,3 +552,4 @@ function textResult(text: string, isError: boolean): CallToolResult {
 
 // silence unused import in type-only usage for Idempotency header constant consumers
 void HEADER_IDEMPOTENCY_KEY;
+void HEADER_PAYMENT_SIGNATURE;

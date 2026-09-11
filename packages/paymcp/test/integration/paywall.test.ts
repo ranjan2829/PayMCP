@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import Fastify from "fastify";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,10 @@ import {
   HEADER_PAYMENT_SIGNATURE,
   decodeHeaderPayload,
 } from "../../src/headers/codec.js";
-import { parsePaymentRequired, parseSettlementResponse } from "../../src/headers/validate.js";
+import {
+  parsePaymentRequired,
+  parseSettlementResponse,
+} from "../../src/headers/validate.js";
 import {
   createFacilitatorFixtureFetch,
   FIXTURE_SIGNATURE_HEADER,
@@ -29,15 +32,19 @@ const config: PaymcpEnvConfig = {
   assetName: "USDC",
 };
 
-describe("paywall middleware (fixture facilitator)", () => {
+describe("paywall middleware (settle on 2xx only)", () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs) {
       rmSync(d, { recursive: true, force: true });
     }
+    vi.restoreAllMocks();
   });
 
-  async function buildApp() {
+  async function buildApp(opts: {
+    readonly handlerStatus?: number;
+    readonly settleSpy?: { calls: number };
+  } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "paymcp-pw-"));
     dirs.push(dir);
     const app = Fastify();
@@ -48,11 +55,25 @@ describe("paywall middleware (fixture facilitator)", () => {
         operations: [{ operationId: "echoMessage", amount: "10000" }],
       }),
     );
+
+    const settleCounter = opts.settleSpy ?? { calls: 0 };
+    const baseFetch = createFacilitatorFixtureFetch({});
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/settle")) {
+        settleCounter.calls += 1;
+      }
+      return baseFetch(input, init);
+    };
+
     const settler = new FacilitatorSettler({
       baseUrl: config.facilitatorUrl,
-      fetchImpl: createFacilitatorFixtureFetch({}),
+      fetchImpl,
     });
+    const settleSpy = vi.spyOn(settler, "settle");
     const ledger = new SqliteLedger(join(dir, "l.db"));
+    const handlerStatus = opts.handlerStatus ?? 200;
+
     await app.register(paymcpPaywall, {
       config,
       prices,
@@ -61,26 +82,36 @@ describe("paywall middleware (fixture facilitator)", () => {
       publicBaseUrl: "http://127.0.0.1:8787",
       operationIdForRequest: () => "echoMessage",
     });
-    app.post("/echo", async () => ({ ok: true }));
-    return app;
+
+    app.post("/echo", async (_req, reply) => {
+      if (handlerStatus !== 200) {
+        return reply.code(handlerStatus).send({ error: `status_${handlerStatus}` });
+      }
+      return { ok: true };
+    });
+
+    return { app, settler, settleSpy, settleCounter, ledger };
   }
 
-  it("unpaid → 402 + PAYMENT-REQUIRED", async () => {
-    const app = await buildApp();
+  it("1) unpaid → 402 + PAYMENT-REQUIRED", async () => {
+    const { app, settleSpy, settleCounter } = await buildApp();
     const res = await app.inject({ method: "POST", url: "/echo", payload: {} });
     expect(res.statusCode).toBe(402);
     const header = res.headers[HEADER_PAYMENT_REQUIRED.toLowerCase()];
     expect(typeof header).toBe("string");
-    const required = decodeHeaderPayload(
-      String(header),
-      parsePaymentRequired,
-    );
+    const required = decodeHeaderPayload(String(header), parsePaymentRequired);
     expect(required.accepts[0]?.amount).toBe("10000");
+    expect(settleSpy).not.toHaveBeenCalled();
+    expect(settleCounter.calls).toBe(0);
     await app.close();
   });
 
-  it("signed payment → settle → 200 + PAYMENT-RESPONSE", async () => {
-    const app = await buildApp();
+  it("2) valid payment + handler 200 → settle called once", async () => {
+    const settleCounter = { calls: 0 };
+    const { app, settleSpy } = await buildApp({
+      handlerStatus: 200,
+      settleSpy: settleCounter,
+    });
     const res = await app.inject({
       method: "POST",
       url: "/echo",
@@ -98,6 +129,83 @@ describe("paywall middleware (fixture facilitator)", () => {
     );
     expect(settlement.success).toBe(true);
     expect(JSON.parse(res.body)).toEqual({ ok: true });
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+    expect(settleCounter.calls).toBe(1);
+    await app.close();
+  });
+
+  it("3) valid payment + upstream/handler 500 → settle NOT called", async () => {
+    const settleCounter = { calls: 0 };
+    const { app, settleSpy, ledger } = await buildApp({
+      handlerStatus: 500,
+      settleSpy: settleCounter,
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers: {
+        [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+      },
+      payload: { message: "hi" },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(settleSpy).not.toHaveBeenCalled();
+    expect(settleCounter.calls).toBe(0);
+    expect(res.headers[HEADER_PAYMENT_RESPONSE.toLowerCase()]).toBeUndefined();
+    expect(await ledger.countSettled()).toBe(0);
+    await app.close();
+  });
+
+  it("4) valid payment + upstream/handler 400 → settle NOT called", async () => {
+    const settleCounter = { calls: 0 };
+    const { app, settleSpy, ledger } = await buildApp({
+      handlerStatus: 400,
+      settleSpy: settleCounter,
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers: {
+        [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+      },
+      payload: { message: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(settleSpy).not.toHaveBeenCalled();
+    expect(settleCounter.calls).toBe(0);
+    expect(res.headers[HEADER_PAYMENT_RESPONSE.toLowerCase()]).toBeUndefined();
+    expect(await ledger.countSettled()).toBe(0);
+    await app.close();
+  });
+
+  it("skips re-settle when idempotency key already settled", async () => {
+    const settleCounter = { calls: 0 };
+    const { app, settleSpy, ledger } = await buildApp({
+      settleSpy: settleCounter,
+    });
+    const headers = {
+      [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+      "idempotency-key": "idem-replay-1",
+    };
+    const first = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers,
+      payload: {},
+    });
+    expect(first.statusCode).toBe(200);
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers,
+      payload: {},
+    });
+    expect(second.statusCode).toBe(200);
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+    expect(settleCounter.calls).toBe(1);
+    expect(await ledger.countSettled()).toBe(1);
     await app.close();
   });
 });

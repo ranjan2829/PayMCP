@@ -41,6 +41,7 @@ Boot fails closed if these are missing or invalid. Full configuration, Sepolia â
 ## Security highlights
 
 - Fail-closed verify + settle (no simulated success path)
+- **Settle on 2xx only** â€” settlement runs after a successful upstream/handler response, not on tool-call entry
 - `PAYMENT-SIGNATURE` redacted from logs
 - Ledger idempotency keys
 - Optional paid-route rate limit
