@@ -3,6 +3,7 @@ import YAML from "js-yaml";
 import type { CompiledOperation } from "../types/openapi.js";
 import type { OperationPrice, PricesFile, XPaymcpExtension } from "../types/config.js";
 import { isRecord } from "../headers/codec.js";
+import { parseAllowlistField, parseAtomicString } from "../controls/parse.js";
 
 export interface PriceTable {
   /** operationId → price; missing means not in allowlist (rejected for paid MCP). */
@@ -55,6 +56,7 @@ export function parsePricesFile(raw: unknown): PricesFile {
   if (raw["version"] !== 1) {
     throw new Error("prices file version must be 1");
   }
+  const allowlist = parseAllowlistField(raw["allowlist"], "prices.allowlist");
   const operationsRaw = raw["operations"];
   if (!Array.isArray(operationsRaw)) {
     throw new Error("prices.operations must be an array");
@@ -75,20 +77,33 @@ export function parsePricesFile(raw: unknown): PricesFile {
     }
     const description = item["description"];
     const paid = item["paid"];
+    const maxDailyRaw = item["maxDailyAtomic"];
     const base: OperationPrice = { operationId, amount };
     const withDesc: OperationPrice =
       typeof description === "string"
         ? { ...base, description }
         : base;
-    if (paid === undefined) {
-      return withDesc;
+    let withPaid: OperationPrice = withDesc;
+    if (paid !== undefined) {
+      if (typeof paid !== "boolean") {
+        throw new Error(`prices.operations[${i}].paid must be boolean`);
+      }
+      withPaid = { ...withDesc, paid };
     }
-    if (typeof paid !== "boolean") {
-      throw new Error(`prices.operations[${i}].paid must be boolean`);
+    if (maxDailyRaw === undefined) {
+      return withPaid;
     }
-    return { ...withDesc, paid };
+    const maxDailyAtomic = parseAtomicString(
+      maxDailyRaw,
+      `prices.operations[${i}].maxDailyAtomic`,
+    );
+    return { ...withPaid, maxDailyAtomic };
   });
-  return { version: 1, operations };
+  return {
+    version: 1,
+    operations,
+    ...(allowlist !== undefined ? { allowlist } : {}),
+  };
 }
 
 export function parseXPaymcpExtension(raw: unknown): XPaymcpExtension | undefined {

@@ -33,6 +33,17 @@ export interface PaymcpEnvConfig {
   readonly rateLimitMax?: number;
   /** Rate limit window in ms (default 60_000). */
   readonly rateLimitWindowMs?: number;
+  /**
+   * Comma-separated operationId allowlist (from PAYMCP_ALLOWLIST).
+   * When set, only listed ops may be paid/exposed; others get 403.
+   */
+  readonly allowlist?: string;
+  /** Default max settled spend per tool per day (atomic units decimal string). */
+  readonly defaultMaxDailyAtomic?: string;
+  /** Budget window: calendar_day_utc (default) or rolling_24h. */
+  readonly budgetWindow?: "calendar_day_utc" | "rolling_24h";
+  /** Optional path to budgets.yaml (also loadable via PAYMCP_BUDGETS_PATH). */
+  readonly budgetsPath?: string;
 }
 
 export interface OperationPrice {
@@ -42,10 +53,14 @@ export interface OperationPrice {
   readonly description?: string;
   /** If false, route is free (no 402). Default true when listed. */
   readonly paid?: boolean;
+  /** Optional per-tool daily spend cap in atomic units (decimal string). */
+  readonly maxDailyAtomic?: string;
 }
 
 export interface PricesFile {
   readonly version: 1;
+  /** When non-empty, only these operationIds may be paid/exposed. */
+  readonly allowlist?: readonly string[];
   readonly operations: readonly OperationPrice[];
 }
 
@@ -72,6 +87,10 @@ export const ENV_KEYS = {
   facilitatorMaxRetries: "PAYMCP_FACILITATOR_MAX_RETRIES",
   rateLimitMax: "PAYMCP_RATE_LIMIT_MAX",
   rateLimitWindowMs: "PAYMCP_RATE_LIMIT_WINDOW_MS",
+  allowlist: "PAYMCP_ALLOWLIST",
+  defaultMaxDailyAtomic: "PAYMCP_DEFAULT_MAX_DAILY_ATOMIC",
+  budgetWindow: "PAYMCP_BUDGET_WINDOW",
+  budgetsPath: "PAYMCP_BUDGETS_PATH",
 } as const;
 
 const nonEmpty = z.string().trim().min(1);
@@ -109,6 +128,13 @@ const paymcpEnvZod = z
     facilitatorMaxRetries: z.number().int().min(0).max(5).optional(),
     rateLimitMax: z.number().int().min(0).optional(),
     rateLimitWindowMs: z.number().int().positive().optional(),
+    allowlist: nonEmpty.optional(),
+    defaultMaxDailyAtomic: z
+      .string()
+      .regex(/^\d+$/, `${ENV_KEYS.defaultMaxDailyAtomic} must be a decimal integer string`)
+      .optional(),
+    budgetWindow: z.enum(["calendar_day_utc", "rolling_24h"]).optional(),
+    budgetsPath: nonEmpty.optional(),
   })
   .strict();
 
@@ -165,6 +191,10 @@ export function loadConfigFromEnv(
       optionalEnv(env, ENV_KEYS.rateLimitWindowMs),
       ENV_KEYS.rateLimitWindowMs,
     ),
+    allowlist: optionalEnv(env, ENV_KEYS.allowlist),
+    defaultMaxDailyAtomic: optionalEnv(env, ENV_KEYS.defaultMaxDailyAtomic),
+    budgetWindow: optionalEnv(env, ENV_KEYS.budgetWindow),
+    budgetsPath: optionalEnv(env, ENV_KEYS.budgetsPath),
   };
 
   const missing: string[] = [];
@@ -220,6 +250,14 @@ export function loadConfigFromEnv(
     ...(raw.rateLimitWindowMs !== undefined
       ? { rateLimitWindowMs: raw.rateLimitWindowMs }
       : {}),
+    ...(raw.allowlist !== undefined ? { allowlist: raw.allowlist } : {}),
+    ...(raw.defaultMaxDailyAtomic !== undefined
+      ? { defaultMaxDailyAtomic: raw.defaultMaxDailyAtomic }
+      : {}),
+    ...(raw.budgetWindow !== undefined
+      ? { budgetWindow: raw.budgetWindow }
+      : {}),
+    ...(raw.budgetsPath !== undefined ? { budgetsPath: raw.budgetsPath } : {}),
   });
 
   if (!parsed.success) {
@@ -262,6 +300,12 @@ export function loadConfigFromEnv(
     ...(v.rateLimitWindowMs !== undefined
       ? { rateLimitWindowMs: v.rateLimitWindowMs }
       : {}),
+    ...(v.allowlist !== undefined ? { allowlist: v.allowlist } : {}),
+    ...(v.defaultMaxDailyAtomic !== undefined
+      ? { defaultMaxDailyAtomic: v.defaultMaxDailyAtomic }
+      : {}),
+    ...(v.budgetWindow !== undefined ? { budgetWindow: v.budgetWindow } : {}),
+    ...(v.budgetsPath !== undefined ? { budgetsPath: v.budgetsPath } : {}),
   };
 }
 

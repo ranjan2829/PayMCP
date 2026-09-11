@@ -34,6 +34,13 @@ import type {
   PaymentRequired,
   SettlementResponse,
 } from "../types/x402.js";
+import type { AccessControls } from "../controls/types.js";
+import {
+  checkAllowlist,
+  checkBudget,
+  resolveAccessControls,
+} from "../controls/resolve.js";
+import { loadBudgetsFile } from "../controls/parse.js";
 
 export interface PaidMcpServerOptions {
   readonly config: PaymcpEnvConfig;
@@ -45,14 +52,29 @@ export interface PaidMcpServerOptions {
   readonly settler?: FacilitatorSettler;
   readonly ledger?: Ledger;
   readonly fetchImpl?: typeof fetch;
+  readonly accessControls?: AccessControls;
 }
 
 export async function createPaidMcpServer(
   options: PaidMcpServerOptions,
 ): Promise<Server> {
-  const allow = new Set(
-    options.allowlist ?? options.operations.map((o) => o.operationId),
-  );
+  const controls: AccessControls =
+    options.accessControls ??
+    resolveAccessControls({
+      config: options.config,
+      ...(options.allowlist !== undefined
+        ? { explicitAllowlist: options.allowlist }
+        : {}),
+      ...(options.config.budgetsPath !== undefined
+        ? { budgetsFile: loadBudgetsFile(options.config.budgetsPath) }
+        : {}),
+    });
+
+  const allow =
+    controls.allowlist ??
+    new Set(
+      options.allowlist ?? options.operations.map((o) => o.operationId),
+    );
   const ops = options.operations.filter((o) => allow.has(o.operationId));
   const byId = new Map(ops.map((o) => [o.operationId, o]));
 
@@ -85,14 +107,55 @@ export async function createPaidMcpServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
+    const deny = checkAllowlist(controls, name);
+    if (!deny.allowed) {
+      return textResult(
+        JSON.stringify(
+          {
+            error: "operation_not_allowlisted",
+            status: 403,
+            detail: `Operation "${name}" is not on the PAYMCP allowlist`,
+          },
+          null,
+          2,
+        ),
+        true,
+      );
+    }
     const op = byId.get(name);
     if (op === undefined) {
       return textResult(`Unknown tool: ${name}`, true);
     }
     const args = asArgsRecord(request.params.arguments);
+    const tenantId =
+      typeof args["tenantId"] === "string" ? args["tenantId"] : undefined;
 
     const paidCheck = isOperationPaid(options.prices, op.operationId);
     if (paidCheck.paid) {
+      const budget = await checkBudget({
+        controls,
+        ledger,
+        operationId: op.operationId,
+        requestedAtomic: paidCheck.price.amount,
+        ...(tenantId !== undefined ? { tenantId } : {}),
+      });
+      if (!budget.ok) {
+        return textResult(
+          JSON.stringify(
+            {
+              error: "budget_exceeded",
+              status: 429,
+              detail: `Daily budget exceeded for "${op.operationId}": spent ${budget.spent.toString()} + requested ${budget.requested.toString()} > max ${budget.max.toString()} atomic units`,
+              spent: budget.spent.toString(),
+              max: budget.max.toString(),
+              requested: budget.requested.toString(),
+            },
+            null,
+            2,
+          ),
+          true,
+        );
+      }
       const payResult = await preparePayment({
         op,
         price: paidCheck.price,
@@ -101,6 +164,7 @@ export async function createPaidMcpServer(
         settler,
         ledger,
         upstreamBaseUrl: options.upstreamBaseUrl,
+        ...(tenantId !== undefined ? { tenantId } : {}),
       });
       if (payResult.kind === "challenge") {
         return textResult(payResult.message, true);
@@ -345,6 +409,7 @@ async function preparePayment(args: {
   readonly settler: FacilitatorSettler;
   readonly ledger: Ledger;
   readonly upstreamBaseUrl: string;
+  readonly tenantId?: string;
 }): Promise<
   | { kind: "challenge"; message: string }
   | { kind: "error"; message: string }
@@ -433,6 +498,7 @@ async function preparePayment(args: {
     operationId: args.op.operationId,
     amount: args.price.amount,
     network: accept.network,
+    ...(args.tenantId !== undefined ? { tenantId: args.tenantId } : {}),
   });
 
   if (claim.kind === "already_settled") {

@@ -7,6 +7,7 @@ import type {
   LedgerEntry,
   LedgerStatus,
   RecordSettlementInput,
+  SumSettledInput,
 } from "./types.js";
 
 export type {
@@ -15,6 +16,7 @@ export type {
   LedgerEntry,
   LedgerStatus,
   RecordSettlementInput,
+  SumSettledInput,
 } from "./types.js";
 
 /**
@@ -43,11 +45,20 @@ export class SqliteLedger implements Ledger {
         status TEXT NOT NULL,
         error_reason TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        tenant_id TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_ledger_operation ON ledger(operation_id);
       CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger(status);
+      CREATE INDEX IF NOT EXISTS idx_ledger_op_created ON ledger(operation_id, created_at);
     `);
+    // Migrate older DBs that lack tenant_id.
+    const cols = this.db.prepare(`PRAGMA table_info(ledger)`).all() as Array<{
+      name: string;
+    }>;
+    if (!cols.some((c) => c.name === "tenant_id")) {
+      this.db.exec(`ALTER TABLE ledger ADD COLUMN tenant_id TEXT`);
+    }
   }
 
   async findByIdempotencyKey(key: string): Promise<LedgerEntry | undefined> {
@@ -68,8 +79,9 @@ export class SqliteLedger implements Ledger {
           .prepare(
             `INSERT INTO ledger (
               id, idempotency_key, operation_id, amount, network, payer,
-              transaction_hash, status, error_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, '', 'pending', NULL, ?, ?)`,
+              transaction_hash, status, error_reason, created_at, updated_at,
+              tenant_id
+            ) VALUES (?, ?, ?, ?, ?, ?, '', 'pending', NULL, ?, ?, ?)`,
           )
           .run(
             id,
@@ -80,6 +92,7 @@ export class SqliteLedger implements Ledger {
             "",
             now,
             now,
+            input.tenantId ?? null,
           );
       } catch (err) {
         if (!isUniqueConstraintError(err)) {
@@ -129,8 +142,9 @@ export class SqliteLedger implements Ledger {
           .prepare(
             `INSERT INTO ledger (
               id, idempotency_key, operation_id, amount, network, payer,
-              transaction_hash, status, error_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              transaction_hash, status, error_reason, created_at, updated_at,
+              tenant_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -144,6 +158,7 @@ export class SqliteLedger implements Ledger {
             input.errorReason ?? null,
             now,
             now,
+            input.tenantId ?? null,
           );
       } catch (err) {
         if (!isUniqueConstraintError(err)) {
@@ -182,6 +197,24 @@ export class SqliteLedger implements Ledger {
     return row.c;
   }
 
+  async sumSettledAtomic(input: SumSettledInput): Promise<bigint> {
+    let sql = `SELECT amount FROM ledger
+      WHERE status = 'settled' AND operation_id = ? AND created_at >= ?`;
+    const params: unknown[] = [input.operationId, input.sinceIso];
+    if (input.tenantId !== undefined) {
+      sql += ` AND tenant_id = ?`;
+      params.push(input.tenantId);
+    }
+    const rows = this.db.prepare(sql).all(...params) as Array<{ amount: unknown }>;
+    let total = 0n;
+    for (const row of rows) {
+      if (typeof row.amount === "string" && /^\d+$/.test(row.amount)) {
+        total += BigInt(row.amount);
+      }
+    }
+    return total;
+  }
+
   async isReady(): Promise<boolean> {
     try {
       this.db.prepare("SELECT 1").get();
@@ -199,7 +232,8 @@ export class SqliteLedger implements Ledger {
     const row = this.db
       .prepare(
         `SELECT id, idempotency_key, operation_id, amount, network, payer,
-                transaction_hash, status, error_reason, created_at, updated_at
+                transaction_hash, status, error_reason, created_at, updated_at,
+                tenant_id
          FROM ledger WHERE idempotency_key = ?`,
       )
       .get(key);
@@ -226,7 +260,7 @@ export class SqliteLedger implements Ledger {
       .prepare(
         `UPDATE ledger SET status = 'pending', transaction_hash = '', payer = '',
          error_reason = NULL, updated_at = ?,
-         operation_id = ?, amount = ?, network = ?
+         operation_id = ?, amount = ?, network = ?, tenant_id = ?
          WHERE idempotency_key = ? AND status IN ('failed', 'replayed')`,
       )
       .run(
@@ -234,6 +268,7 @@ export class SqliteLedger implements Ledger {
         input.operationId,
         input.amount,
         input.network,
+        input.tenantId ?? null,
         input.idempotencyKey,
       );
     if (result.changes === 0) {
@@ -259,7 +294,7 @@ export class SqliteLedger implements Ledger {
       .prepare(
         `UPDATE ledger SET status = ?, transaction_hash = ?, payer = ?,
          error_reason = ?, updated_at = ?,
-         operation_id = ?, amount = ?, network = ?
+         operation_id = ?, amount = ?, network = ?, tenant_id = COALESCE(?, tenant_id)
          WHERE idempotency_key = ?`,
       )
       .run(
@@ -271,6 +306,7 @@ export class SqliteLedger implements Ledger {
         input.operationId,
         input.amount,
         input.network,
+        input.tenantId ?? null,
         input.idempotencyKey,
       );
     const refreshed = this.findSync(input.idempotencyKey);
@@ -304,6 +340,7 @@ interface RawRow {
   error_reason: unknown;
   created_at: unknown;
   updated_at: unknown;
+  tenant_id?: unknown;
 }
 
 function mapRow(row: unknown): LedgerEntry {
@@ -332,6 +369,10 @@ function mapRow(row: unknown): LedgerEntry {
       row.error_reason === null ? null : asString(row.error_reason),
     createdAt: asString(row.created_at),
     updatedAt: asString(row.updated_at),
+    tenantId:
+      row.tenant_id === null || row.tenant_id === undefined
+        ? null
+        : asString(row.tenant_id),
   };
 }
 

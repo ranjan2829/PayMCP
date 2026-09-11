@@ -12,6 +12,8 @@ export interface LedgerEntry {
   readonly errorReason: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Optional tenant for per-tenant budget tracking. */
+  readonly tenantId: string | null;
 }
 
 export interface RecordSettlementInput {
@@ -23,6 +25,7 @@ export interface RecordSettlementInput {
   readonly transaction: string;
   readonly status: Exclude<LedgerStatus, "pending" | "replayed">;
   readonly errorReason?: string;
+  readonly tenantId?: string;
 }
 
 export interface BeginPendingInput {
@@ -30,6 +33,15 @@ export interface BeginPendingInput {
   readonly operationId: string;
   readonly amount: string;
   readonly network: string;
+  readonly tenantId?: string;
+}
+
+export interface SumSettledInput {
+  readonly operationId: string;
+  /** Inclusive lower bound (ISO-8601). Only rows with created_at >= sinceIso. */
+  readonly sinceIso: string;
+  /** When set, only count rows for this tenant. When omitted, sum all tenants for the op. */
+  readonly tenantId?: string;
 }
 
 /**
@@ -60,6 +72,11 @@ export interface Ledger {
     replayed: boolean;
   }>;
   countSettled(): Promise<number>;
+  /**
+   * Sum of `amount` for settled rows matching operationId (and optional tenant)
+   * with created_at >= sinceIso. Used for per-tool daily budget hard-stops.
+   */
+  sumSettledAtomic(input: SumSettledInput): Promise<bigint>;
   /** True when the store is reachable (used by /readyz). */
   isReady(): Promise<boolean>;
   close(): Promise<void>;

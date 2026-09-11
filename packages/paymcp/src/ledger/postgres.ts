@@ -7,6 +7,7 @@ import type {
   LedgerEntry,
   LedgerStatus,
   RecordSettlementInput,
+  SumSettledInput,
 } from "./types.js";
 
 type PgPool = {
@@ -70,10 +71,15 @@ export class PostgresLedger implements Ledger {
         status TEXT NOT NULL,
         error_reason TEXT,
         created_at TIMESTAMPTZ NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL
+        updated_at TIMESTAMPTZ NOT NULL,
+        tenant_id TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_ledger_operation ON ledger(operation_id);
       CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger(status);
+      CREATE INDEX IF NOT EXISTS idx_ledger_op_created ON ledger(operation_id, created_at);
+    `);
+    await this.pool.query(`
+      ALTER TABLE ledger ADD COLUMN IF NOT EXISTS tenant_id TEXT
     `);
     this.migrated = true;
   }
@@ -82,7 +88,8 @@ export class PostgresLedger implements Ledger {
     await this.ensureMigrated();
     const result = await this.pool.query(
       `SELECT id, idempotency_key, operation_id, amount, network, payer,
-              transaction_hash, status, error_reason, created_at, updated_at
+              transaction_hash, status, error_reason, created_at, updated_at,
+              tenant_id
        FROM ledger WHERE idempotency_key = $1`,
       [key],
     );
@@ -100,7 +107,8 @@ export class PostgresLedger implements Ledger {
       await client.query("BEGIN");
       const existingResult = await client.query(
         `SELECT id, idempotency_key, operation_id, amount, network, payer,
-                transaction_hash, status, error_reason, created_at, updated_at
+                transaction_hash, status, error_reason, created_at, updated_at,
+                tenant_id
          FROM ledger WHERE idempotency_key = $1 FOR UPDATE`,
         [input.idempotencyKey],
       );
@@ -117,8 +125,9 @@ export class PostgresLedger implements Ledger {
         await client.query(
           `INSERT INTO ledger (
             id, idempotency_key, operation_id, amount, network, payer,
-            transaction_hash, status, error_reason, created_at, updated_at
-          ) VALUES ($1,$2,$3,$4,$5,'','','pending',NULL,$6,$7)`,
+            transaction_hash, status, error_reason, created_at, updated_at,
+            tenant_id
+          ) VALUES ($1,$2,$3,$4,$5,'','','pending',NULL,$6,$7,$8)`,
           [
             id,
             input.idempotencyKey,
@@ -127,6 +136,7 @@ export class PostgresLedger implements Ledger {
             input.network,
             now,
             now,
+            input.tenantId ?? null,
           ],
         );
       } catch (err) {
@@ -146,7 +156,8 @@ export class PostgresLedger implements Ledger {
 
       const entryResult = await client.query(
         `SELECT id, idempotency_key, operation_id, amount, network, payer,
-                transaction_hash, status, error_reason, created_at, updated_at
+                transaction_hash, status, error_reason, created_at, updated_at,
+                tenant_id
          FROM ledger WHERE idempotency_key = $1`,
         [input.idempotencyKey],
       );
@@ -183,8 +194,9 @@ export class PostgresLedger implements Ledger {
       await this.pool.query(
         `UPDATE ledger SET status = $1, transaction_hash = $2, payer = $3,
          error_reason = $4, updated_at = $5,
-         operation_id = $6, amount = $7, network = $8
-         WHERE idempotency_key = $9`,
+         operation_id = $6, amount = $7, network = $8,
+         tenant_id = COALESCE($9, tenant_id)
+         WHERE idempotency_key = $10`,
         [
           input.status,
           input.transaction,
@@ -194,6 +206,7 @@ export class PostgresLedger implements Ledger {
           input.operationId,
           input.amount,
           input.network,
+          input.tenantId ?? null,
           input.idempotencyKey,
         ],
       );
@@ -210,8 +223,9 @@ export class PostgresLedger implements Ledger {
       await this.pool.query(
         `INSERT INTO ledger (
           id, idempotency_key, operation_id, amount, network, payer,
-          transaction_hash, status, error_reason, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          transaction_hash, status, error_reason, created_at, updated_at,
+          tenant_id
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
           id,
           input.idempotencyKey,
@@ -224,6 +238,7 @@ export class PostgresLedger implements Ledger {
           input.errorReason ?? null,
           now,
           now,
+          input.tenantId ?? null,
         ],
       );
     } catch (err) {
@@ -273,6 +288,26 @@ export class PostgresLedger implements Ledger {
     return typeof c === "number" ? c : 0;
   }
 
+  async sumSettledAtomic(input: SumSettledInput): Promise<bigint> {
+    await this.ensureMigrated();
+    const params: unknown[] = [input.operationId, input.sinceIso];
+    let sql = `SELECT amount FROM ledger
+      WHERE status = 'settled' AND operation_id = $1 AND created_at >= $2::timestamptz`;
+    if (input.tenantId !== undefined) {
+      sql += ` AND tenant_id = $3`;
+      params.push(input.tenantId);
+    }
+    const result = await this.pool.query(sql, params);
+    let total = 0n;
+    for (const row of result.rows) {
+      const amount = row["amount"];
+      if (typeof amount === "string" && /^\d+$/.test(amount)) {
+        total += BigInt(amount);
+      }
+    }
+    return total;
+  }
+
   async isReady(): Promise<boolean> {
     try {
       await this.pool.query("SELECT 1");
@@ -309,15 +344,17 @@ async function resolveExistingForClaim(
   const updated = await client.query(
     `UPDATE ledger SET status = 'pending', transaction_hash = '', payer = '',
      error_reason = NULL, updated_at = $1,
-     operation_id = $2, amount = $3, network = $4
-     WHERE idempotency_key = $5 AND status IN ('failed', 'replayed')
+     operation_id = $2, amount = $3, network = $4, tenant_id = $5
+     WHERE idempotency_key = $6 AND status IN ('failed', 'replayed')
      RETURNING id, idempotency_key, operation_id, amount, network, payer,
-               transaction_hash, status, error_reason, created_at, updated_at`,
+               transaction_hash, status, error_reason, created_at, updated_at,
+               tenant_id`,
     [
       updatedAt,
       input.operationId,
       input.amount,
       input.network,
+      input.tenantId ?? null,
       input.idempotencyKey,
     ],
   );
@@ -325,7 +362,8 @@ async function resolveExistingForClaim(
   if (row === undefined) {
     const again = await client.query(
       `SELECT id, idempotency_key, operation_id, amount, network, payer,
-              transaction_hash, status, error_reason, created_at, updated_at
+              transaction_hash, status, error_reason, created_at, updated_at,
+              tenant_id
        FROM ledger WHERE idempotency_key = $1`,
       [input.idempotencyKey],
     );
@@ -367,6 +405,10 @@ function mapRow(row: Record<string, unknown>): LedgerEntry {
         : asString(row["error_reason"]),
     createdAt: asIso(row["created_at"]),
     updatedAt: asIso(row["updated_at"]),
+    tenantId:
+      row["tenant_id"] === null || row["tenant_id"] === undefined
+        ? null
+        : asString(row["tenant_id"]),
   };
 }
 
