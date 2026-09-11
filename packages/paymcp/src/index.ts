@@ -62,6 +62,8 @@ export type {
   LedgerEntry,
   LedgerStatus,
   RecordSettlementInput,
+  BeginPendingInput,
+  BeginPendingResult,
 } from "./ledger/types.js";
 
 export {

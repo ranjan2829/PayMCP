@@ -43,7 +43,7 @@ Boot fails closed if these are missing or invalid. Full configuration, Sepolia �
 - Fail-closed verify + settle (no simulated success path)
 - **Settle on 2xx only** — settlement runs after a successful upstream/handler response, not on tool-call entry
 - `PAYMENT-SIGNATURE` redacted from logs
-- Ledger idempotency keys
+- **Idempotency-Key** — settled keys replay without re-settle; in-flight keys fail closed (`409`); UNIQUE constraint → one settle wins
 - Optional paid-route rate limit
 
 Report issues privately — see [SECURITY.md](https://github.com/ranjan2829/PayMCP/blob/main/SECURITY.md).
