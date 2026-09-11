@@ -64,6 +64,7 @@ export type {
   RecordSettlementInput,
   BeginPendingInput,
   BeginPendingResult,
+  SumSettledInput,
 } from "./ledger/types.js";
 
 export {
@@ -114,3 +115,25 @@ export {
   type LogLevel,
   type HealthOptions,
 } from "./http/index.js";
+
+export type {
+  AccessControls,
+  AllowlistDecision,
+  BudgetDecision,
+  BudgetWindow,
+  BudgetsFile,
+  OperationBudget,
+  TenantBudgets,
+} from "./controls/index.js";
+
+export {
+  loadBudgetsFile,
+  parseBudgetsFile,
+  parseAllowlistEnv,
+  resolveAccessControls,
+  checkAllowlist,
+  checkBudget,
+  resolveMaxDailyAtomic,
+  windowStartIso,
+  emptyAccessControls,
+} from "./controls/index.js";

@@ -196,6 +196,58 @@ node scripts/live-settle.mjs
 
 **Idempotent retries:** Send the same `Idempotency-Key` when agents retry a paid request. After a successful settle, PayMCP returns the prior `PAYMENT-RESPONSE` and does **not** call the facilitator again. Concurrent duplicates while a settle is in flight get `409 idempotency_in_flight` (fail closed — prefer this over waiting). Different keys settle independently. Applies to both the HTTP paywall and MCP tool paths.
 
+
+## Allowlist + per-tool budgets
+
+Production controls for which tools can be paid/exposed and how much they may settle per day.
+
+### Allowlist
+
+When configured, **only listed `operationId`s** may be paid or exposed. Others get **403** (`operation_not_allowlisted`) on the HTTP paywall and a clear MCP tool error.
+
+| Source | Example |
+|--------|---------|
+| Env | `PAYMCP_ALLOWLIST=echoMessage,getWeather` |
+| `prices.yaml` | `allowlist: [echoMessage, getWeather]` |
+| `budgets.yaml` | same `allowlist:` key |
+| CLI | `paymcp … --allow echoMessage,getWeather` |
+
+Precedence: **env > CLI `--allow` > prices.yaml > budgets.yaml**. If unset, all compiled ops are allowed (backward compatible).
+
+### Per-tool daily budgets
+
+Hard stop on settled spend tracked from the ledger (status `settled` only). When `spent + requested > max`, the request fails with **429** (`budget_exceeded`) and **settle is not called**.
+
+```yaml
+# prices.yaml (per-op) or budgets.yaml
+version: 1
+allowlist: [echoMessage, getWeather]
+window: calendar_day_utc   # or rolling_24h
+defaultMaxDailyAtomic: "100000"
+operations:
+  - operationId: echoMessage
+    amount: "10000"
+    maxDailyAtomic: "50000"
+  - operationId: getWeather
+    amount: "25000"
+    maxDailyAtomic: "75000"
+# optional per-tenant overrides (budgets.yaml):
+# tenants:
+#   - tenantId: acme
+#     defaultMaxDailyAtomic: "200000"
+#     operations:
+#       - operationId: echoMessage
+#         maxDailyAtomic: "30000"
+```
+
+| Env | Purpose |
+|-----|---------|
+| `PAYMCP_DEFAULT_MAX_DAILY_ATOMIC` | Global default cap (atomic units) |
+| `PAYMCP_BUDGET_WINDOW` | `calendar_day_utc` (default) or `rolling_24h` |
+| `PAYMCP_BUDGETS_PATH` | Path to `budgets.yaml` |
+
+Optional tenant: HTTP header `x-paymcp-tenant` or MCP argument `tenantId`. Budgets are independent per tool (and per tenant when set). Both the **HTTP paywall** and **MCP** paths enforce allowlist + budgets. Settlement still uses real `FacilitatorSettler` only after **2xx**, with idempotent retries unchanged.
+
 ## Security practices
 
 - **Fail-closed settle** — network errors, verify rejects, and settle failures never succeed the request

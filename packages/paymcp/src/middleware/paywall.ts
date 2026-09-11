@@ -36,6 +36,13 @@ import type {
 import { SimpleRateLimiter } from "../http/rate-limit.js";
 import { createLogger } from "../http/logger.js";
 import { summarizePaymentSignatureHeader } from "../http/sanitize.js";
+import type { AccessControls } from "../controls/types.js";
+import {
+  checkAllowlist,
+  checkBudget,
+  resolveAccessControls,
+} from "../controls/resolve.js";
+import { loadBudgetsFile } from "../controls/parse.js";
 
 export interface PaywallOptions {
   readonly config: PaymcpEnvConfig;
@@ -45,6 +52,10 @@ export interface PaywallOptions {
   readonly settler?: FacilitatorSettler;
   readonly ledger?: Ledger;
   readonly publicBaseUrl?: string;
+  /** Pre-built access controls; else resolved from config (+ optional prices/budgets files). */
+  readonly accessControls?: AccessControls;
+  /** Optional tenant id resolver (e.g. from x-paymcp-tenant header). */
+  readonly tenantIdForRequest?: (req: FastifyRequest) => string | undefined;
 }
 
 /** Pending payment attached in preHandler; settle runs only after a 2xx reply. */
@@ -90,6 +101,15 @@ async function paymcpPaywallImpl(
     });
   const ledger = options.ledger ?? (await createLedger(options.config));
 
+  const controls: AccessControls =
+    options.accessControls ??
+    resolveAccessControls({
+      config: options.config,
+      ...(options.config.budgetsPath !== undefined
+        ? { budgetsFile: loadBudgetsFile(options.config.budgetsPath) }
+        : {}),
+    });
+
   const rateMax = options.config.rateLimitMax ?? 0;
   const rateLimiter =
     rateMax > 0
@@ -106,8 +126,40 @@ async function paymcpPaywallImpl(
     if (operationId === undefined) {
       return;
     }
+
+    const allow = checkAllowlist(controls, operationId);
+    if (!allow.allowed) {
+      await reply.code(403).send({
+        error: "operation_not_allowlisted",
+        detail: `Operation "${operationId}" is not on the PAYMCP allowlist`,
+      });
+      return;
+    }
+
     const paidCheck = isOperationPaid(options.prices, operationId);
     if (!paidCheck.paid) {
+      return;
+    }
+
+    const tenantId =
+      options.tenantIdForRequest?.(request) ??
+      headerValue(request, "x-paymcp-tenant");
+
+    const budget = await checkBudget({
+      controls,
+      ledger,
+      operationId,
+      requestedAtomic: paidCheck.price.amount,
+      ...(tenantId !== undefined ? { tenantId } : {}),
+    });
+    if (!budget.ok) {
+      await reply.code(429).send({
+        error: "budget_exceeded",
+        detail: `Daily budget exceeded for "${operationId}": spent ${budget.spent.toString()} + requested ${budget.requested.toString()} > max ${budget.max.toString()} atomic units`,
+        spent: budget.spent.toString(),
+        max: budget.max.toString(),
+        requested: budget.requested.toString(),
+      });
       return;
     }
 
@@ -192,6 +244,7 @@ async function paymcpPaywallImpl(
       operationId,
       amount: price.amount,
       network: accept.network,
+      ...(tenantId !== undefined ? { tenantId } : {}),
     });
 
     if (claim.kind === "already_settled") {
