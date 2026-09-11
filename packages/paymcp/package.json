@@ -1,6 +1,6 @@
 {
   "name": "openapi-to-paymcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Compile an OpenAPI spec into a paid MCP server with real x402 facilitator settlement",
   "license": "MIT",
   "type": "module",
