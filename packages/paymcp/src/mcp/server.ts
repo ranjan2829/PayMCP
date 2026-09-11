@@ -166,6 +166,16 @@ export async function createPaidMcpServer(
           paymentRequirements: payResult.accept,
         });
       } catch (err) {
+        await ledger.recordSettlement({
+          idempotencyKey: payResult.clientIdem,
+          operationId: op.operationId,
+          amount: paidCheck.price.amount,
+          network: payResult.accept.network,
+          payer: "",
+          transaction: "",
+          status: "failed",
+          errorReason: "facilitator_unavailable",
+        });
         const message =
           err instanceof FacilitatorHttpError ||
           err instanceof FacilitatorTransportError
@@ -417,8 +427,15 @@ async function preparePayment(args: {
           paymentSignatureHeader: sig,
         });
 
-  const existing = await args.ledger.findByIdempotencyKey(clientIdem);
-  if (existing !== undefined && existing.status === "settled") {
+  // Atomic claim: settled → replay; pending → fail closed; else this caller owns settle.
+  const claim = await args.ledger.beginPending({
+    idempotencyKey: clientIdem,
+    operationId: args.op.operationId,
+    amount: args.price.amount,
+    network: accept.network,
+  });
+
+  if (claim.kind === "already_settled") {
     return {
       kind: "ready",
       paymentPayload,
@@ -427,10 +444,26 @@ async function preparePayment(args: {
       clientIdem,
       priorSettlement: {
         success: true,
-        transaction: existing.transaction,
-        network: existing.network,
-        payer: existing.payer,
+        transaction: claim.entry.transaction,
+        network: claim.entry.network,
+        payer: claim.entry.payer,
       },
+    };
+  }
+
+  if (claim.kind === "in_flight") {
+    return {
+      kind: "error",
+      message: JSON.stringify(
+        {
+          error: "idempotency_in_flight",
+          status: 409,
+          detail:
+            "A request with this Idempotency-Key is already settling; retry after it completes (settled keys replay without re-charging).",
+        },
+        null,
+        2,
+      ),
     };
   }
 
@@ -441,6 +474,16 @@ async function preparePayment(args: {
       paymentRequirements: accept,
     });
   } catch (err) {
+    await args.ledger.recordSettlement({
+      idempotencyKey: clientIdem,
+      operationId: args.op.operationId,
+      amount: args.price.amount,
+      network: accept.network,
+      payer: "",
+      transaction: "",
+      status: "failed",
+      errorReason: "facilitator_unavailable",
+    });
     const message =
       err instanceof Error ? err.message : "facilitator_unavailable";
     return { kind: "error", message: `facilitator_unavailable: ${message}` };

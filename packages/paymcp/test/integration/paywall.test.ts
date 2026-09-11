@@ -8,6 +8,7 @@ import { FacilitatorSettler } from "../../src/settler/facilitator.js";
 import { SqliteLedger } from "../../src/ledger/sqlite.js";
 import { buildPriceTable, parsePricesFile } from "../../src/pricing/resolve.js";
 import {
+  HEADER_IDEMPOTENCY_KEY,
   HEADER_PAYMENT_REQUIRED,
   HEADER_PAYMENT_RESPONSE,
   HEADER_PAYMENT_SIGNATURE,
@@ -178,14 +179,14 @@ describe("paywall middleware (settle on 2xx only)", () => {
     await app.close();
   });
 
-  it("skips re-settle when idempotency key already settled", async () => {
+  it("two paid requests same Idempotency-Key after 200 → settle once", async () => {
     const settleCounter = { calls: 0 };
     const { app, settleSpy, ledger } = await buildApp({
       settleSpy: settleCounter,
     });
     const headers = {
       [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
-      "idempotency-key": "idem-replay-1",
+      [HEADER_IDEMPOTENCY_KEY]: "idem-replay-1",
     };
     const first = await app.inject({
       method: "POST",
@@ -195,6 +196,7 @@ describe("paywall middleware (settle on 2xx only)", () => {
     });
     expect(first.statusCode).toBe(200);
     expect(settleSpy).toHaveBeenCalledTimes(1);
+    expect(first.headers[HEADER_PAYMENT_RESPONSE.toLowerCase()]).toBeDefined();
 
     const second = await app.inject({
       method: "POST",
@@ -206,6 +208,69 @@ describe("paywall middleware (settle on 2xx only)", () => {
     expect(settleSpy).toHaveBeenCalledTimes(1);
     expect(settleCounter.calls).toBe(1);
     expect(await ledger.countSettled()).toBe(1);
+    expect(second.headers[HEADER_PAYMENT_RESPONSE.toLowerCase()]).toBeDefined();
+    await app.close();
+  });
+
+  it("concurrent/rapid double submit same key → still one settle", async () => {
+    const settleCounter = { calls: 0 };
+    const { app, settleSpy, ledger } = await buildApp({
+      settleSpy: settleCounter,
+    });
+    const headers = {
+      [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+      [HEADER_IDEMPOTENCY_KEY]: "idem-concurrent-1",
+    };
+
+    const [a, b] = await Promise.all([
+      app.inject({ method: "POST", url: "/echo", headers, payload: {} }),
+      app.inject({ method: "POST", url: "/echo", headers, payload: {} }),
+    ]);
+
+    const statuses = [a.statusCode, b.statusCode];
+    // One request settles (200); the loser fail-closes with 409 in-flight,
+    // or also 200 if it arrived after settle completed (replay).
+    expect(statuses.every((s) => s === 200 || s === 409)).toBe(true);
+    expect(statuses.filter((s) => s === 200).length).toBeGreaterThanOrEqual(1);
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+    expect(settleCounter.calls).toBe(1);
+    expect(await ledger.countSettled()).toBe(1);
+
+    const winner = a.statusCode === 200 ? a : b;
+    expect(winner.headers[HEADER_PAYMENT_RESPONSE.toLowerCase()]).toBeDefined();
+
+    if (a.statusCode === 409 || b.statusCode === 409) {
+      const loser = a.statusCode === 409 ? a : b;
+      expect(JSON.parse(loser.body).error).toBe("idempotency_in_flight");
+    }
+    await app.close();
+  });
+
+  it("different Idempotency-Keys → two settles", async () => {
+    const settleCounter = { calls: 0 };
+    const { app, settleSpy, ledger } = await buildApp({
+      settleSpy: settleCounter,
+    });
+    const base = {
+      [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+    };
+    const first = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers: { ...base, [HEADER_IDEMPOTENCY_KEY]: "idem-a" },
+      payload: {},
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers: { ...base, [HEADER_IDEMPOTENCY_KEY]: "idem-b" },
+      payload: {},
+    });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(settleSpy).toHaveBeenCalledTimes(2);
+    expect(settleCounter.calls).toBe(2);
+    expect(await ledger.countSettled()).toBe(2);
     await app.close();
   });
 });

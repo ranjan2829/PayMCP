@@ -203,4 +203,82 @@ describe("MCP paid tools (settle on upstream 2xx only)", () => {
     expect(await h.ledger.countSettled()).toBe(0);
     await h.close();
   });
+
+  it("two paid tool calls same idempotencyKey after 200 → settle once", async () => {
+    const h = await buildHarness({ upstreamStatus: 200 });
+    const args = {
+      paymentSignature: FIXTURE_SIGNATURE_HEADER,
+      idempotencyKey: "mcp-idem-replay-1",
+      body: { message: "hi" },
+    };
+    const first = await h.client.callTool({ name: "echoMessage", arguments: args });
+    expect(first.isError).toBeFalsy();
+    expect(h.settleSpy).toHaveBeenCalledTimes(1);
+
+    const second = await h.client.callTool({ name: "echoMessage", arguments: args });
+    expect(second.isError).toBeFalsy();
+    const body = JSON.parse(toolText(second as never));
+    expect(body.settlement?.success).toBe(true);
+    expect(h.settleSpy).toHaveBeenCalledTimes(1);
+    expect(h.settleCounter.calls).toBe(1);
+    expect(await h.ledger.countSettled()).toBe(1);
+    await h.close();
+  });
+
+  it("concurrent tool calls same idempotencyKey → still one settle", async () => {
+    const h = await buildHarness({ upstreamStatus: 200 });
+    const args = {
+      paymentSignature: FIXTURE_SIGNATURE_HEADER,
+      idempotencyKey: "mcp-idem-concurrent-1",
+      body: { message: "hi" },
+    };
+    const [a, b] = await Promise.all([
+      h.client.callTool({ name: "echoMessage", arguments: args }),
+      h.client.callTool({ name: "echoMessage", arguments: args }),
+    ]);
+
+    expect(h.settleSpy).toHaveBeenCalledTimes(1);
+    expect(h.settleCounter.calls).toBe(1);
+    expect(await h.ledger.countSettled()).toBe(1);
+
+    const texts = [toolText(a as never), toolText(b as never)];
+    const parsed = texts.map((t) => {
+      try {
+        return JSON.parse(t) as { error?: string; settlement?: { success?: boolean } };
+      } catch {
+        return { error: t };
+      }
+    });
+    const successes = parsed.filter((p) => p.settlement?.success === true);
+    const inFlight = parsed.filter((p) => p.error === "idempotency_in_flight");
+    expect(successes.length + inFlight.length).toBe(2);
+    expect(successes.length).toBeGreaterThanOrEqual(1);
+    await h.close();
+  });
+
+  it("different idempotencyKeys → two settles", async () => {
+    const h = await buildHarness({ upstreamStatus: 200 });
+    const first = await h.client.callTool({
+      name: "echoMessage",
+      arguments: {
+        paymentSignature: FIXTURE_SIGNATURE_HEADER,
+        idempotencyKey: "mcp-key-a",
+        body: {},
+      },
+    });
+    const second = await h.client.callTool({
+      name: "echoMessage",
+      arguments: {
+        paymentSignature: FIXTURE_SIGNATURE_HEADER,
+        idempotencyKey: "mcp-key-b",
+        body: {},
+      },
+    });
+    expect(first.isError).toBeFalsy();
+    expect(second.isError).toBeFalsy();
+    expect(h.settleSpy).toHaveBeenCalledTimes(2);
+    expect(h.settleCounter.calls).toBe(2);
+    expect(await h.ledger.countSettled()).toBe(2);
+    await h.close();
+  });
 });

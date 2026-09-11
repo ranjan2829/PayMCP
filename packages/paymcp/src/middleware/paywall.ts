@@ -186,13 +186,20 @@ async function paymcpPaywallImpl(
         paymentSignatureHeader: signatureHeader,
       });
 
-    const existing = await ledger.findByIdempotencyKey(clientIdem);
-    if (existing !== undefined && existing.status === "settled") {
+    // Atomic claim: settled → replay; pending → fail closed; else this caller owns settle.
+    const claim = await ledger.beginPending({
+      idempotencyKey: clientIdem,
+      operationId,
+      amount: price.amount,
+      network: accept.network,
+    });
+
+    if (claim.kind === "already_settled") {
       const priorSettlement: SettlementResponse = {
         success: true,
-        transaction: existing.transaction,
-        network: existing.network,
-        payer: existing.payer,
+        transaction: claim.entry.transaction,
+        network: claim.entry.network,
+        payer: claim.entry.payer,
       };
       reply.header(
         HEADER_PAYMENT_RESPONSE,
@@ -210,6 +217,16 @@ async function paymcpPaywallImpl(
       return;
     }
 
+    if (claim.kind === "in_flight") {
+      // Prefer fail closed over waiting: do not start a second settle.
+      await reply.code(409).send({
+        error: "idempotency_in_flight",
+        detail:
+          "A request with this Idempotency-Key is already settling; retry after it completes (settled keys replay without re-charging).",
+      });
+      return;
+    }
+
     // Early verify (signature validity) — settle only after a 2xx handler reply.
     let verification;
     try {
@@ -218,6 +235,16 @@ async function paymcpPaywallImpl(
         paymentRequirements: accept,
       });
     } catch (err) {
+      await ledger.recordSettlement({
+        idempotencyKey: clientIdem,
+        operationId,
+        amount: price.amount,
+        network: accept.network,
+        payer: "",
+        transaction: "",
+        status: "failed",
+        errorReason: "facilitator_unavailable",
+      });
       if (
         err instanceof FacilitatorHttpError ||
         err instanceof FacilitatorTransportError
@@ -315,6 +342,17 @@ async function paymcpPaywallImpl(
         paymentRequirements: pending.accept,
       });
     } catch (err) {
+      // Release pending claim so the same Idempotency-Key can be retried.
+      await ledger.recordSettlement({
+        idempotencyKey: pending.clientIdem,
+        operationId: pending.operationId,
+        amount: pending.amount,
+        network: pending.accept.network,
+        payer: "",
+        transaction: "",
+        status: "failed",
+        errorReason: "facilitator_unavailable",
+      });
       if (
         err instanceof FacilitatorHttpError ||
         err instanceof FacilitatorTransportError

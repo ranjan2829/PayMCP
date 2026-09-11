@@ -1,17 +1,29 @@
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  BeginPendingInput,
+  BeginPendingResult,
   Ledger,
   LedgerEntry,
   LedgerStatus,
   RecordSettlementInput,
 } from "./types.js";
 
-export type { LedgerEntry, LedgerStatus, RecordSettlementInput } from "./types.js";
+export type {
+  BeginPendingInput,
+  BeginPendingResult,
+  LedgerEntry,
+  LedgerStatus,
+  RecordSettlementInput,
+} from "./types.js";
 
 /**
  * Structured SQLite ledger with idempotency-key uniqueness.
  * Implements the shared async Ledger interface.
+ *
+ * Concurrent settle attempts for the same key: `beginPending` uses a UNIQUE
+ * constraint inside an IMMEDIATE transaction so only one caller claims
+ * `pending`; others get `in_flight` (fail closed) or `already_settled`.
  */
 export class SqliteLedger implements Ledger {
   private readonly db: Database.Database;
@@ -39,83 +51,125 @@ export class SqliteLedger implements Ledger {
   }
 
   async findByIdempotencyKey(key: string): Promise<LedgerEntry | undefined> {
-    const row = this.db
-      .prepare(
-        `SELECT id, idempotency_key, operation_id, amount, network, payer,
-                transaction_hash, status, error_reason, created_at, updated_at
-         FROM ledger WHERE idempotency_key = ?`,
-      )
-      .get(key);
-    if (row === undefined) {
-      return undefined;
-    }
-    return mapRow(row);
+    return this.findSync(key);
+  }
+
+  async beginPending(input: BeginPendingInput): Promise<BeginPendingResult> {
+    const claim = this.db.transaction(() => {
+      const existing = this.findSync(input.idempotencyKey);
+      if (existing !== undefined) {
+        return this.resolveExistingForClaim(existing, input);
+      }
+
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      try {
+        this.db
+          .prepare(
+            `INSERT INTO ledger (
+              id, idempotency_key, operation_id, amount, network, payer,
+              transaction_hash, status, error_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, '', 'pending', NULL, ?, ?)`,
+          )
+          .run(
+            id,
+            input.idempotencyKey,
+            input.operationId,
+            input.amount,
+            input.network,
+            "",
+            now,
+            now,
+          );
+      } catch (err) {
+        if (!isUniqueConstraintError(err)) {
+          throw err;
+        }
+        const raced = this.findSync(input.idempotencyKey);
+        if (raced === undefined) {
+          throw new Error("ledger unique race vanished");
+        }
+        return this.resolveExistingForClaim(raced, input);
+      }
+
+      const entry = this.findSync(input.idempotencyKey);
+      if (entry === undefined) {
+        throw new Error("ledger pending insert vanished");
+      }
+      return { kind: "claimed" as const, entry };
+    });
+
+    return claim();
   }
 
   /**
-   * Insert a settled/failed row. If the idempotency key already exists with
-   * status settled, returns the existing entry (replay). Conflicts on failed
-   * → settled upgrades are allowed only when previous status was failed.
+   * Insert or upgrade to settled/failed. Settled keys replay without overwrite.
+   * Pending (and failed) rows are upgraded in place.
    */
   async recordSettlement(input: RecordSettlementInput): Promise<{
     entry: LedgerEntry;
     replayed: boolean;
   }> {
-    const existing = await this.findByIdempotencyKey(input.idempotencyKey);
-    if (existing !== undefined) {
-      if (existing.status === "settled") {
-        return { entry: existing, replayed: true };
+    const write = this.db.transaction(() => {
+      const existing = this.findSync(input.idempotencyKey);
+      if (existing !== undefined) {
+        if (existing.status === "settled") {
+          return { entry: existing, replayed: true };
+        }
+        return {
+          entry: this.updateTerminal(input),
+          replayed: false,
+        };
       }
-      if (existing.status === "failed" && input.status === "settled") {
-        const updatedAt = new Date().toISOString();
+
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      try {
         this.db
           .prepare(
-            `UPDATE ledger SET status = ?, transaction_hash = ?, payer = ?,
-             error_reason = NULL, updated_at = ? WHERE idempotency_key = ?`,
+            `INSERT INTO ledger (
+              id, idempotency_key, operation_id, amount, network, payer,
+              transaction_hash, status, error_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
-            input.status,
-            input.transaction,
-            input.payer,
-            updatedAt,
+            id,
             input.idempotencyKey,
+            input.operationId,
+            input.amount,
+            input.network,
+            input.payer,
+            input.transaction,
+            input.status,
+            input.errorReason ?? null,
+            now,
+            now,
           );
-        const refreshed = await this.findByIdempotencyKey(input.idempotencyKey);
-        if (refreshed === undefined) {
-          throw new Error("ledger update vanished");
+      } catch (err) {
+        if (!isUniqueConstraintError(err)) {
+          throw err;
         }
-        return { entry: refreshed, replayed: false };
+        const raced = this.findSync(input.idempotencyKey);
+        if (raced === undefined) {
+          throw new Error("ledger insert race vanished");
+        }
+        if (raced.status === "settled") {
+          return { entry: raced, replayed: true };
+        }
+        return {
+          entry: this.updateTerminal(input),
+          replayed: false,
+        };
       }
-      return { entry: existing, replayed: true };
-    }
 
-    const now = new Date().toISOString();
-    const id = randomUUID();
-    this.db
-      .prepare(
-        `INSERT INTO ledger (
-          id, idempotency_key, operation_id, amount, network, payer,
-          transaction_hash, status, error_reason, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.idempotencyKey,
-        input.operationId,
-        input.amount,
-        input.network,
-        input.payer,
-        input.transaction,
-        input.status,
-        input.errorReason ?? null,
-        now,
-        now,
-      );
-    const entry = await this.findByIdempotencyKey(input.idempotencyKey);
-    if (entry === undefined) {
-      throw new Error("ledger insert vanished");
-    }
-    return { entry, replayed: false };
+      const entry = this.findSync(input.idempotencyKey);
+      if (entry === undefined) {
+        throw new Error("ledger insert vanished");
+      }
+      return { entry, replayed: false };
+    });
+
+    return write();
   }
 
   async countSettled(): Promise<number> {
@@ -139,6 +193,91 @@ export class SqliteLedger implements Ledger {
 
   async close(): Promise<void> {
     this.db.close();
+  }
+
+  private findSync(key: string): LedgerEntry | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, idempotency_key, operation_id, amount, network, payer,
+                transaction_hash, status, error_reason, created_at, updated_at
+         FROM ledger WHERE idempotency_key = ?`,
+      )
+      .get(key);
+    if (row === undefined) {
+      return undefined;
+    }
+    return mapRow(row);
+  }
+
+  private resolveExistingForClaim(
+    existing: LedgerEntry,
+    input: BeginPendingInput,
+  ): BeginPendingResult {
+    if (existing.status === "settled") {
+      return { kind: "already_settled", entry: existing };
+    }
+    if (existing.status === "pending") {
+      return { kind: "in_flight", entry: existing };
+    }
+
+    // Reclaim failed/replayed so the same key can be safely retried.
+    const updatedAt = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE ledger SET status = 'pending', transaction_hash = '', payer = '',
+         error_reason = NULL, updated_at = ?,
+         operation_id = ?, amount = ?, network = ?
+         WHERE idempotency_key = ? AND status IN ('failed', 'replayed')`,
+      )
+      .run(
+        updatedAt,
+        input.operationId,
+        input.amount,
+        input.network,
+        input.idempotencyKey,
+      );
+    if (result.changes === 0) {
+      const again = this.findSync(input.idempotencyKey);
+      if (again === undefined) {
+        throw new Error("ledger reclaim vanished");
+      }
+      if (again.status === "settled") {
+        return { kind: "already_settled", entry: again };
+      }
+      return { kind: "in_flight", entry: again };
+    }
+    const refreshed = this.findSync(input.idempotencyKey);
+    if (refreshed === undefined) {
+      throw new Error("ledger reclaim refresh vanished");
+    }
+    return { kind: "claimed", entry: refreshed };
+  }
+
+  private updateTerminal(input: RecordSettlementInput): LedgerEntry {
+    const updatedAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE ledger SET status = ?, transaction_hash = ?, payer = ?,
+         error_reason = ?, updated_at = ?,
+         operation_id = ?, amount = ?, network = ?
+         WHERE idempotency_key = ?`,
+      )
+      .run(
+        input.status,
+        input.transaction,
+        input.payer,
+        input.errorReason ?? null,
+        updatedAt,
+        input.operationId,
+        input.amount,
+        input.network,
+        input.idempotencyKey,
+      );
+    const refreshed = this.findSync(input.idempotencyKey);
+    if (refreshed === undefined) {
+      throw new Error("ledger update vanished");
+    }
+    return refreshed;
   }
 }
 
@@ -214,4 +353,12 @@ function isCountRow(row: unknown): row is { c: number } {
     "c" in row &&
     typeof (row as { c: unknown }).c === "number"
   );
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  return code === "SQLITE_CONSTRAINT_UNIQUE" || code === "SQLITE_CONSTRAINT";
 }

@@ -67,7 +67,7 @@ Client ──402──► PayMCP (paywall / MCP)
              ledger (SQLite | Postgres) + PAYMENT-RESPONSE
 ```
 
-**Settlement timing:** `FacilitatorSettler.settle` runs only after a successful upstream/handler response (**2xx**), not on tool-call or paywall entry. Verify may run early; failed upstream responses never settle. Already-settled idempotency keys skip re-settle.
+**Settlement timing:** `FacilitatorSettler.settle` runs only after a successful upstream/handler response (**2xx**), not on tool-call or paywall entry. Verify may run early; failed upstream responses never settle. Already-settled `Idempotency-Key`s skip verify/settle; in-flight keys fail closed (`409`).
 
 | Path | Role |
 |------|------|
@@ -192,13 +192,16 @@ node scripts/live-settle.mjs
 | `PAYMENT-REQUIRED` | server → client | base64 `PaymentRequired` |
 | `PAYMENT-SIGNATURE` | client → server | base64 `PaymentPayload` |
 | `PAYMENT-RESPONSE` | server → client | base64 `SettlementResponse` |
+| `Idempotency-Key` | client → server | opaque string (optional; derived from signature if omitted) |
+
+**Idempotent retries:** Send the same `Idempotency-Key` when agents retry a paid request. After a successful settle, PayMCP returns the prior `PAYMENT-RESPONSE` and does **not** call the facilitator again. Concurrent duplicates while a settle is in flight get `409 idempotency_in_flight` (fail closed — prefer this over waiting). Different keys settle independently. Applies to both the HTTP paywall and MCP tool paths.
 
 ## Security practices
 
 - **Fail-closed settle** — network errors, verify rejects, and settle failures never succeed the request
 - **Redacted logs** — `PAYMENT-SIGNATURE` and `Authorization` are never logged in full
 - **No secrets in the package** — `.env` is gitignored; publish includes only `dist`, `bin`, docs
-- **Idempotency** — ledger keys prevent double-credit on retries
+- **Idempotency-Key** — same key never double-charges: settled rows replay prior `PAYMENT-RESPONSE` (skip verify/settle); in-flight `pending` **fails closed** with `409 idempotency_in_flight` (no second settle); SQLite/Postgres `UNIQUE(idempotency_key)` ensures only one concurrent settle wins
 - **Optional rate limit** — `PAYMCP_RATE_LIMIT_MAX` on paid routes
 - **Request IDs** — `x-request-id` on every request (demo-api)
 
