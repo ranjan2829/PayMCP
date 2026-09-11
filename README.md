@@ -104,6 +104,7 @@ Settlement **always** targets a real facilitator base URL. Boot is fail-fast (zo
 | `PAYMCP_FACILITATOR_MAX_RETRIES` | 5xx/network only (default `2`) |
 | `PAYMCP_RATE_LIMIT_MAX` | Paid-route rate limit (`0` = off) |
 | `PAYMCP_RATE_LIMIT_WINDOW_MS` | Default `60000` |
+| `PAYMCP_DISPUTE_HMAC_SECRET` | HMAC secret for `dispute-pack` signing (≥16 chars) |
 
 ## Demo (fixture) vs live money
 
@@ -248,10 +249,61 @@ operations:
 
 Optional tenant: HTTP header `x-paymcp-tenant` or MCP argument `tenantId`. Budgets are independent per tool (and per tenant when set). Both the **HTTP paywall** and **MCP** paths enforce allowlist + budgets. Settlement still uses real `FacilitatorSettler` only after **2xx**, with idempotent retries unchanged.
 
+
+## Signed dispute / evidence packs
+
+Export a **chargeback-ready** evidence pack from the settlement ledger (settled rows only). Packs are content-hashed and signed with **HMAC-SHA256** so operators can prove integrity when responding to disputes.
+
+### CLI
+
+```bash
+export PAYMCP_DISPUTE_HMAC_SECRET='your-long-random-secret'
+# optional: PAYMCP_LEDGER_PATH=./paymcp-ledger.db
+# optional: PAYMCP_DATABASE_URL=postgres://…
+
+paymcp dispute-pack \
+  --from 2026-09-01T00:00:00.000Z \
+  --to 2026-09-12T23:59:59.999Z \
+  --out pack.json
+```
+
+### Library
+
+```ts
+import {
+  createLedger,
+  exportDisputePack,
+  verifyDisputePackSignature,
+} from "openapi-to-paymcp";
+
+const ledger = await createLedger({ ledgerPath: "./paymcp-ledger.db" });
+const pack = await exportDisputePack({
+  ledger,
+  from: "2026-09-01T00:00:00.000Z",
+  to: "2026-09-12T23:59:59.999Z",
+  hmacSecret: process.env.PAYMCP_DISPUTE_HMAC_SECRET!,
+});
+await ledger.close();
+
+const ok = verifyDisputePackSignature(pack, process.env.PAYMCP_DISPUTE_HMAC_SECRET!);
+```
+
+### Pack contents
+
+| Field | Description |
+|-------|-------------|
+| `attempts[]` | Settled rows: `operationId`, `amount`, `network`, `payer`, `transaction`, `idempotencyKey`, `createdAt`, `updatedAt` |
+| `policyNote` / `version` | Evidence scope + schema version |
+| `contentHash` | SHA-256 of canonical JSON of the unsigned body |
+| `signature` | `{ alg: "HMAC-SHA256", value }` over `contentHash` |
+
+**Never included:** full `PAYMENT-SIGNATURE` / `PaymentPayload` bodies (or other long base64 payment blobs). Set `PAYMCP_DISPUTE_HMAC_SECRET` (≥16 characters); keep it out of git.
+
 ## Security practices
 
 - **Fail-closed settle** — network errors, verify rejects, and settle failures never succeed the request
 - **Redacted logs** — `PAYMENT-SIGNATURE` and `Authorization` are never logged in full
+- **Dispute packs** — exports omit `PAYMENT-SIGNATURE` payloads; HMAC (`PAYMCP_DISPUTE_HMAC_SECRET`) binds `contentHash`
 - **No secrets in the package** — `.env` is gitignored; publish includes only `dist`, `bin`, docs
 - **Idempotency-Key** — same key never double-charges: settled rows replay prior `PAYMENT-RESPONSE` (skip verify/settle); in-flight `pending` **fails closed** with `409 idempotency_in_flight` (no second settle); SQLite/Postgres `UNIQUE(idempotency_key)` ensures only one concurrent settle wins
 - **Optional rate limit** — `PAYMCP_RATE_LIMIT_MAX` on paid routes

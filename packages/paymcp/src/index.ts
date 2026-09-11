@@ -65,6 +65,7 @@ export type {
   BeginPendingInput,
   BeginPendingResult,
   SumSettledInput,
+  ListSettledRangeInput,
 } from "./ledger/types.js";
 
 export {
@@ -73,6 +74,23 @@ export {
 } from "./ledger/sqlite.js";
 
 export { createLedger } from "./ledger/create.js";
+
+export {
+  DISPUTE_PACK_VERSION,
+  DISPUTE_PACK_POLICY_NOTE,
+  DISPUTE_HMAC_ENV,
+  exportDisputePack,
+  verifyDisputePackSignature,
+  hashDisputePackBody,
+  signContentHash,
+  toAttempt,
+  canonicalJson,
+  type DisputePack,
+  type DisputePackBody,
+  type DisputePackAttempt,
+  type DisputePackSignature,
+  type ExportDisputePackInput,
+} from "./dispute/pack.js";
 
 export {
   buildPriceTable,
@@ -99,7 +117,13 @@ export {
   type PaidMcpServerOptions,
 } from "./mcp/server.js";
 
-export { runCli, parseArgs, printHelp } from "./cli/index.js";
+export {
+  runCli,
+  parseArgs,
+  parseCli,
+  printHelp,
+  printDisputePackHelp,
+} from "./cli/index.js";
 
 export {
   createLogger,
