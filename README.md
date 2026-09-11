@@ -73,6 +73,7 @@ Client ──402──► PayMCP (paywall / MCP)
 |------|------|
 | `packages/paymcp` (`openapi-to-paymcp`) | Publishable CLI + library |
 | `examples/demo-api` | Sample Fastify API with `x-paymcp` prices |
+| `examples/buyer` | Buyer **example** using `@x402/fetch` (402 → pay → retry) |
 | `scripts/demo.mjs` | Protocol **fixture** demo (not live money) |
 | `scripts/live-settle.mjs` | **Live** settle (gated by `PAYMCP_LIVE=1`) |
 
@@ -153,8 +154,9 @@ pnpm --filter @paymcp/demo-api start
 **Wallet / payer (PAYMENT-SIGNATURE)** — do not invent signing crypto. Use the official x402 client:
 
 - Docs: [Quickstart for buyers](https://docs.x402.org/getting-started/quickstart-for-buyers)
-- Packages: `@x402/fetch`, `@x402/evm` (`ExactEvmScheme`), `viem` accounts
+- Packages: `@x402/fetch` `^2.25.0`, `@x402/evm` `^2.25.0` (`ExactEvmScheme`), `viem` accounts
 - Spec: [exact EVM / EIP-3009](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_evm.md)
+- Runnable example: [`examples/buyer`](examples/buyer) (`pnpm buyer:example`)
 
 ```ts
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
@@ -172,6 +174,34 @@ const res = await fetchWithPayment("http://127.0.0.1:8787/echo", {
   body: JSON.stringify({ message: "hello" }),
 });
 ```
+
+### Buyer example (`@x402/fetch`)
+
+This is an **example**, not a new protocol. `wrapFetchWithPayment` handles unpaid → 402 + `PAYMENT-REQUIRED` → sign → retry with `PAYMENT-SIGNATURE`. The PayMCP server still verifies and settles through its **real** facilitator after a 2xx handler. The buyer client does **not** call `/verify` or `/settle`.
+
+Set `PAYMCP_ASSET_NAME=USDC` on the server so the 402 `extra.name` / `extra.version` fields match EIP-3009 domain data.
+
+```bash
+# terminal 1: local paymcp demo-api (real facilitator)
+export PAYMCP_FACILITATOR_URL=https://x402.org/facilitator
+export PAYMCP_PAY_TO=0xYourRecipient
+export PAYMCP_NETWORK=eip155:84532
+export PAYMCP_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+export PAYMCP_ASSET_NAME=USDC
+pnpm --filter @paymcp/demo-api build
+pnpm --filter @paymcp/demo-api start
+
+# terminal 2: inspect 402 (no wallet, no funds)
+pnpm buyer:probe
+
+# terminal 2: pay /echo (spends testnet USDC; refuses unless PAYMCP_LIVE=1)
+export PAYMCP_LIVE=1
+export EVM_PRIVATE_KEY=0xYourPayerKey
+export DEMO_API_URL=http://127.0.0.1:8787
+pnpm buyer:example
+```
+
+Env names: [`.env.example`](.env.example). Prefer Base Sepolia. Never commit `.env`.
 
 **Live settle script** (refuses unless `PAYMCP_LIVE=1`; never prints the full signature):
 
