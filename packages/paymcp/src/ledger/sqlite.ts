@@ -6,6 +6,7 @@ import type {
   Ledger,
   LedgerEntry,
   LedgerStatus,
+  ListSettledRangeInput,
   RecordSettlementInput,
   SumSettledInput,
 } from "./types.js";
@@ -15,6 +16,7 @@ export type {
   BeginPendingResult,
   LedgerEntry,
   LedgerStatus,
+  ListSettledRangeInput,
   RecordSettlementInput,
   SumSettledInput,
 } from "./types.js";
@@ -213,6 +215,25 @@ export class SqliteLedger implements Ledger {
       }
     }
     return total;
+  }
+
+
+  async listSettledInRange(
+    input: ListSettledRangeInput,
+  ): Promise<readonly LedgerEntry[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, idempotency_key, operation_id, amount, network, payer,
+                transaction_hash, status, error_reason, created_at, updated_at,
+                tenant_id
+         FROM ledger
+         WHERE status = 'settled'
+           AND created_at >= ?
+           AND created_at <= ?
+         ORDER BY created_at ASC, idempotency_key ASC`,
+      )
+      .all(input.fromIso, input.toIso);
+    return rows.map((row) => mapRow(row));
   }
 
   async isReady(): Promise<boolean> {

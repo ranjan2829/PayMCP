@@ -6,6 +6,7 @@ import type {
   Ledger,
   LedgerEntry,
   LedgerStatus,
+  ListSettledRangeInput,
   RecordSettlementInput,
   SumSettledInput,
 } from "./types.js";
@@ -306,6 +307,25 @@ export class PostgresLedger implements Ledger {
       }
     }
     return total;
+  }
+
+
+  async listSettledInRange(
+    input: ListSettledRangeInput,
+  ): Promise<readonly LedgerEntry[]> {
+    await this.ensureMigrated();
+    const result = await this.pool.query(
+      `SELECT id, idempotency_key, operation_id, amount, network, payer,
+              transaction_hash, status, error_reason, created_at, updated_at,
+              tenant_id
+       FROM ledger
+       WHERE status = 'settled'
+         AND created_at >= $1::timestamptz
+         AND created_at <= $2::timestamptz
+       ORDER BY created_at ASC, idempotency_key ASC`,
+      [input.fromIso, input.toIso],
+    );
+    return result.rows.map((row) => mapRow(row));
   }
 
   async isReady(): Promise<boolean> {

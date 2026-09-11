@@ -44,6 +44,13 @@ export interface SumSettledInput {
   readonly tenantId?: string;
 }
 
+export interface ListSettledRangeInput {
+  /** Inclusive lower bound (ISO-8601). Rows with created_at >= fromIso. */
+  readonly fromIso: string;
+  /** Inclusive upper bound (ISO-8601). Rows with created_at <= toIso. */
+  readonly toIso: string;
+}
+
 /**
  * Result of atomically claiming an idempotency key for settlement.
  *
@@ -77,6 +84,11 @@ export interface Ledger {
    * with created_at >= sinceIso. Used for per-tool daily budget hard-stops.
    */
   sumSettledAtomic(input: SumSettledInput): Promise<bigint>;
+  /**
+   * Settled rows with created_at in [fromIso, toIso] (inclusive), ordered by created_at ASC.
+   * Used for chargeback / dispute evidence packs.
+   */
+  listSettledInRange(input: ListSettledRangeInput): Promise<readonly LedgerEntry[]>;
   /** True when the store is reachable (used by /readyz). */
   isReady(): Promise<boolean>;
   close(): Promise<void>;
