@@ -11,7 +11,8 @@ services:
       # Uncomment to use Postgres ledger:
       # PAYMCP_DATABASE_URL: postgres://paymcp:paymcp@postgres:5432/paymcp
     volumes:
-      - demo-ledger:/app/examples/demo-api
+      # Only persist the sqlite ledger — never mount over the whole app dir
+      - demo-ledger:/app/examples/demo-api/data
     depends_on: []
     restart: unless-stopped
 
