@@ -18,12 +18,18 @@ import {
   parsePaymentRequired,
   parseSettlementResponse,
 } from "../../src/headers/validate.js";
+import { createHmac } from "node:crypto";
 import {
   createFacilitatorFixtureFetch,
   FIXTURE_SIGNATURE_HEADER,
   FIXTURE_ACCEPT,
+  FIXTURE_SETTLE_OK,
 } from "../fixtures/facilitator.js";
 import type { PaymcpEnvConfig } from "../../src/types/config.js";
+import {
+  SettlementWebhookSender,
+  WEBHOOK_SIGNATURE_HEADER,
+} from "../../src/webhook/settlement.js";
 
 const config: PaymcpEnvConfig = {
   facilitatorUrl: "https://facilitator.example/x402",
@@ -45,6 +51,7 @@ describe("paywall middleware (settle on 2xx only)", () => {
   async function buildApp(opts: {
     readonly handlerStatus?: number;
     readonly settleSpy?: { calls: number };
+    readonly webhook?: SettlementWebhookSender;
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "paymcp-pw-"));
     dirs.push(dir);
@@ -82,6 +89,7 @@ describe("paywall middleware (settle on 2xx only)", () => {
       ledger,
       publicBaseUrl: "http://127.0.0.1:8787",
       operationIdForRequest: () => "echoMessage",
+      ...(opts.webhook !== undefined ? { webhook: opts.webhook } : {}),
     });
 
     app.post("/echo", async (_req, reply) => {
@@ -273,4 +281,116 @@ describe("paywall middleware (settle on 2xx only)", () => {
     expect(await ledger.countSettled()).toBe(2);
     await app.close();
   });
+  it("successful settle POSTs signed webhook once", async () => {
+    const webhookCalls: Array<{ url: string; body: string; sig: string }> = [];
+    const webhookFetch: typeof fetch = async (input, init) => {
+      const headers = init?.headers as Record<string, string>;
+      webhookCalls.push({
+        url: String(input),
+        body: String(init?.body ?? ""),
+        sig: headers[WEBHOOK_SIGNATURE_HEADER] ?? "",
+      });
+      return new Response("{}", { status: 202 });
+    };
+    const webhook = new SettlementWebhookSender({
+      url: "https://billing.example/hooks",
+      secret: "integration-webhook-secret!",
+      fetchImpl: webhookFetch,
+      maxRetries: 0,
+    });
+    const { app } = await buildApp({ webhook });
+    const res = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers: {
+        [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+        [HEADER_IDEMPOTENCY_KEY]: "idem-webhook-1",
+        "x-request-id": "req-wh-1",
+      },
+      payload: { message: "hi" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(webhookCalls).toHaveLength(1);
+    expect(webhookCalls[0]!.url).toBe("https://billing.example/hooks");
+    const payload = JSON.parse(webhookCalls[0]!.body) as Record<string, unknown>;
+    expect(payload.operationId).toBe("echoMessage");
+    expect(payload.transaction).toBe(FIXTURE_SETTLE_OK.transaction);
+    expect(payload.idempotencyKey).toBe("idem-webhook-1");
+    expect(payload.asset).toBe(FIXTURE_ACCEPT.asset);
+    expect(String(webhookCalls[0]!.body)).not.toMatch(/PAYMENT-SIGNATURE/i);
+    const expected =
+      "sha256=" +
+      createHmac("sha256", "integration-webhook-secret!")
+        .update(webhookCalls[0]!.body, "utf8")
+        .digest("hex");
+    expect(webhookCalls[0]!.sig).toBe(expected);
+    await app.close();
+  });
+
+  it("handler 500 does not fire webhook", async () => {
+    const webhookCalls: unknown[] = [];
+    const webhook = new SettlementWebhookSender({
+      url: "https://billing.example/hooks",
+      secret: "integration-webhook-secret!",
+      fetchImpl: async () => {
+        webhookCalls.push(1);
+        return new Response("{}", { status: 200 });
+      },
+      maxRetries: 0,
+    });
+    const { app } = await buildApp({ handlerStatus: 500, webhook });
+    const res = await app.inject({
+      method: "POST",
+      url: "/echo",
+      headers: {
+        [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+      },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(500);
+    expect(webhookCalls).toHaveLength(0);
+    await app.close();
+  });
+
+  it("idempotent replay does not re-fire webhook", async () => {
+    const webhookCalls: unknown[] = [];
+    const webhook = new SettlementWebhookSender({
+      url: "https://billing.example/hooks",
+      secret: "integration-webhook-secret!",
+      fetchImpl: async () => {
+        webhookCalls.push(1);
+        return new Response("{}", { status: 200 });
+      },
+      maxRetries: 0,
+    });
+    const { app } = await buildApp({ webhook });
+    const headers = {
+      [HEADER_PAYMENT_SIGNATURE]: FIXTURE_SIGNATURE_HEADER,
+      [HEADER_IDEMPOTENCY_KEY]: "idem-webhook-replay",
+    };
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/echo",
+          headers,
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(webhookCalls).toHaveLength(1);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/echo",
+          headers,
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(webhookCalls).toHaveLength(1);
+    await app.close();
+  });
+
 });

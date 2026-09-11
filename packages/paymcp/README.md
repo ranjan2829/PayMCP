@@ -46,6 +46,7 @@ Boot fails closed if these are missing or invalid. Full configuration, Sepolia �
 - **Idempotency-Key** — settled keys replay without re-settle; in-flight keys fail closed (`409`); UNIQUE constraint → one settle wins
 - Optional paid-route rate limit
 - **Dispute packs** — `paymcp dispute-pack` / `exportDisputePack` (HMAC-signed; no PAYMENT-SIGNATURE payloads)
+- **Settlement webhooks** — optional `PAYMCP_WEBHOOK_URL` + `PAYMCP_WEBHOOK_SECRET` after successful settle
 
 Report issues privately — see [SECURITY.md](https://github.com/ranjan2829/PayMCP/blob/main/SECURITY.md).
 

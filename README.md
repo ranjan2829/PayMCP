@@ -107,6 +107,10 @@ Settlement **always** targets a real facilitator base URL. Boot is fail-fast (zo
 | `PAYMCP_RATE_LIMIT_MAX` | Paid-route rate limit (`0` = off) |
 | `PAYMCP_RATE_LIMIT_WINDOW_MS` | Default `60000` |
 | `PAYMCP_DISPUTE_HMAC_SECRET` | HMAC secret for `dispute-pack` signing (≥16 chars) |
+| `PAYMCP_WEBHOOK_URL` | Billing webhook URL (optional; omit to disable) |
+| `PAYMCP_WEBHOOK_SECRET` | HMAC secret for `X-PayMCP-Signature` (≥16 chars; required if URL set) |
+| `PAYMCP_WEBHOOK_TIMEOUT_MS` | Webhook HTTP timeout (default `5000`) |
+| `PAYMCP_WEBHOOK_MAX_RETRIES` | 5xx/network retries for webhook (default `2`) |
 
 ## Demo (fixture) vs live money
 
@@ -281,6 +285,42 @@ operations:
 Optional tenant: HTTP header `x-paymcp-tenant` or MCP argument `tenantId`. Budgets are independent per tool (and per tenant when set). Both the **HTTP paywall** and **MCP** paths enforce allowlist + budgets. Settlement still uses real `FacilitatorSettler` only after **2xx**, with idempotent retries unchanged.
 
 
+
+## Settlement webhooks (billing)
+
+After a **successful settle** (handler/upstream **2xx** and facilitator `success: true`), PayMCP can POST a signed JSON event to your billing endpoint. Failed settles, non-2xx handlers, and idempotent replays do **not** fire the webhook.
+
+### Configure
+
+```bash
+export PAYMCP_WEBHOOK_URL=https://billing.example/webhooks/paymcp
+export PAYMCP_WEBHOOK_SECRET='your-long-random-secret'   # ≥16 chars
+# optional:
+# export PAYMCP_WEBHOOK_TIMEOUT_MS=5000
+# export PAYMCP_WEBHOOK_MAX_RETRIES=2
+```
+
+### Request
+
+- `POST` with `Content-Type: application/json`
+- Header `X-PayMCP-Signature: sha256=<hex>` — HMAC-SHA256 of the **raw body** using `PAYMCP_WEBHOOK_SECRET`
+- Body fields: `event` (`settlement.succeeded`), `version`, `operationId`, `amount`, `network`, `asset`, `payer`, `transaction`, `idempotencyKey`, `settledAt`, optional `requestId`
+
+**Never included:** raw `PAYMENT-SIGNATURE` / `PaymentPayload`. Delivery failures are logged and retried (5xx/network) but do not fail the client settle response. De-dupe on `idempotencyKey` if you need strict once-only billing.
+
+### Verify (billing side)
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verifyPaymcpWebhook(rawBody: string, signatureHeader: string, secret: string): boolean {
+  const expected = "sha256=" + createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signatureHeader);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+```
+
 ## Signed dispute / evidence packs
 
 Export a **chargeback-ready** evidence pack from the settlement ledger (settled rows only). Packs are content-hashed and signed with **HMAC-SHA256** so operators can prove integrity when responding to disputes.
@@ -335,6 +375,7 @@ const ok = verifyDisputePackSignature(pack, process.env.PAYMCP_DISPUTE_HMAC_SECR
 - **Fail-closed settle** — network errors, verify rejects, and settle failures never succeed the request
 - **Redacted logs** — `PAYMENT-SIGNATURE` and `Authorization` are never logged in full
 - **Dispute packs** — exports omit `PAYMENT-SIGNATURE` payloads; HMAC (`PAYMCP_DISPUTE_HMAC_SECRET`) binds `contentHash`
+- **Settlement webhooks** — optional billing notify after successful settle; HMAC `X-PayMCP-Signature`; no `PAYMENT-SIGNATURE` in payload
 - **No secrets in the package** — `.env` is gitignored; publish includes only `dist`, `bin`, docs
 - **Idempotency-Key** — same key never double-charges: settled rows replay prior `PAYMENT-RESPONSE` (skip verify/settle); in-flight `pending` **fails closed** with `409 idempotency_in_flight` (no second settle); SQLite/Postgres `UNIQUE(idempotency_key)` ensures only one concurrent settle wins
 - **Optional rate limit** — `PAYMCP_RATE_LIMIT_MAX` on paid routes
