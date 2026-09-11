@@ -1,0 +1,38 @@
+name: Harness CI
+
+# Agent-trace quality gate — fails the PR when good/bad fixtures disagree
+# with PayMCP production policies (settle on 2xx, Idempotency-Key,
+# no double-charge, budgets, secret redaction).
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck harness
+        run: pnpm --filter @paymcp/harness-ci typecheck
+
+      - name: Test harness rules
+        run: pnpm --filter @paymcp/harness-ci test
+
+      - name: Run harness-ci (fixture gate)
+        run: pnpm harness:ci
