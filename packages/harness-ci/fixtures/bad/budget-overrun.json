@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "bad-budget-overrun",
+  "description": "Budget check allows spent+requested over max",
+  "expect": "fail",
+  "events": [
+    {
+      "type": "budget_check",
+      "operationId": "echoMessage",
+      "maxDailyAtomic": "10000",
+      "spentAtomic": "9000",
+      "requestedAtomic": "2000",
+      "allowed": true
+    }
+  ]
+}

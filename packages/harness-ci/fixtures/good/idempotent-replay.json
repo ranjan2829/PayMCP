@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "good-idempotent-replay",
+  "description": "Second request with same Idempotency-Key replays — no second successful settle",
+  "expect": "pass",
+  "events": [
+    {
+      "type": "http_request",
+      "operationId": "getWeather",
+      "amountAtomic": "500",
+      "headers": { "idempotency-key": "ik-weather-1" }
+    },
+    {
+      "type": "http_response",
+      "operationId": "getWeather",
+      "statusCode": 200
+    },
+    {
+      "type": "settle",
+      "operationId": "getWeather",
+      "success": true,
+      "idempotencyKey": "ik-weather-1",
+      "afterStatusCode": 200
+    },
+    {
+      "type": "http_request",
+      "operationId": "getWeather",
+      "amountAtomic": "500",
+      "headers": { "idempotency-key": "ik-weather-1" }
+    },
+    {
+      "type": "http_response",
+      "operationId": "getWeather",
+      "statusCode": 200
+    },
+    {
+      "type": "log",
+      "level": "info",
+      "message": "replayed prior PAYMENT-RESPONSE for ik-weather-1 (skip settle)"
+    }
+  ]
+}

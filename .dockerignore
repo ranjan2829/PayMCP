@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+.git
+.scratch
+.github
+.env
+.env.*
+!.env.example
+*.md
+!packages/paymcp/README.md
+!packages/harness-ci/README.md
+coverage
+*.log

@@ -15,7 +15,8 @@
     "publish:paymcp": "pnpm --filter openapi-to-paymcp publish --access public",
     "live:settle": "node ./scripts/live-settle.mjs",
     "buyer:example": "pnpm --filter @paymcp/buyer-example start",
-    "buyer:probe": "pnpm --filter @paymcp/buyer-example probe"
+    "buyer:probe": "pnpm --filter @paymcp/buyer-example probe",
+    "harness:ci": "pnpm --filter @paymcp/harness-ci harness:ci"
   },
   "engines": {
     "node": ">=20"

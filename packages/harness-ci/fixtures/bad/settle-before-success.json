@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "bad-settle-before-success",
+  "description": "Settle attempted after upstream 502",
+  "expect": "fail",
+  "events": [
+    {
+      "type": "http_request",
+      "operationId": "echoMessage",
+      "amountAtomic": "1000",
+      "headers": { "idempotency-key": "ik-bad-settle" }
+    },
+    {
+      "type": "http_response",
+      "operationId": "echoMessage",
+      "statusCode": 502
+    },
+    {
+      "type": "settle",
+      "operationId": "echoMessage",
+      "success": true,
+      "idempotencyKey": "ik-bad-settle",
+      "afterStatusCode": 502
+    }
+  ]
+}
