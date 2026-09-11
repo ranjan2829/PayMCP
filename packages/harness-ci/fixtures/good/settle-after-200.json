@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "good-settle-after-200",
+  "description": "Verify early, upstream 200, then settle with Idempotency-Key",
+  "expect": "pass",
+  "events": [
+    {
+      "type": "http_request",
+      "operationId": "echoMessage",
+      "method": "POST",
+      "path": "/echo",
+      "amountAtomic": "1000",
+      "headers": {
+        "idempotency-key": "ik-echo-1",
+        "payment-signature": "[REDACTED]"
+      }
+    },
+    {
+      "type": "verify",
+      "operationId": "echoMessage",
+      "success": true
+    },
+    {
+      "type": "http_response",
+      "operationId": "echoMessage",
+      "statusCode": 200
+    },
+    {
+      "type": "settle",
+      "operationId": "echoMessage",
+      "success": true,
+      "amountAtomic": "1000",
+      "idempotencyKey": "ik-echo-1",
+      "afterStatusCode": 200
+    },
+    {
+      "type": "log",
+      "level": "info",
+      "message": "settled echoMessage tx=0xabc payment-signature=[REDACTED]"
+    }
+  ]
+}

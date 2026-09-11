@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "good-no-settle-on-5xx",
+  "description": "Upstream 500 — verify may run, settle must not",
+  "expect": "pass",
+  "events": [
+    {
+      "type": "http_request",
+      "operationId": "echoMessage",
+      "amountAtomic": "1000",
+      "headers": { "idempotency-key": "ik-fail-1" }
+    },
+    {
+      "type": "verify",
+      "operationId": "echoMessage",
+      "success": true
+    },
+    {
+      "type": "http_response",
+      "operationId": "echoMessage",
+      "statusCode": 500
+    },
+    {
+      "type": "log",
+      "level": "info",
+      "message": "upstream failed; ledger marked failed; settle skipped"
+    }
+  ]
+}

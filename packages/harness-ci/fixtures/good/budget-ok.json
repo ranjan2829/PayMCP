@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "good-budget-ok",
+  "description": "Budget check denies when spent+requested would exceed max",
+  "expect": "pass",
+  "events": [
+    {
+      "type": "budget_check",
+      "operationId": "echoMessage",
+      "maxDailyAtomic": "10000",
+      "spentAtomic": "9000",
+      "requestedAtomic": "2000",
+      "allowed": false
+    },
+    {
+      "type": "log",
+      "level": "warn",
+      "message": "budget_exceeded for echoMessage"
+    }
+  ]
+}

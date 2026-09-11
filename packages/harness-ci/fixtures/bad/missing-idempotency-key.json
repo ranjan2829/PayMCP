@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "bad-missing-idempotency-key",
+  "description": "Paid request without Idempotency-Key",
+  "expect": "fail",
+  "events": [
+    {
+      "type": "http_request",
+      "operationId": "echoMessage",
+      "amountAtomic": "1000",
+      "headers": { "content-type": "application/json" }
+    },
+    {
+      "type": "http_response",
+      "operationId": "echoMessage",
+      "statusCode": 200
+    },
+    {
+      "type": "settle",
+      "operationId": "echoMessage",
+      "success": true,
+      "afterStatusCode": 200
+    }
+  ]
+}

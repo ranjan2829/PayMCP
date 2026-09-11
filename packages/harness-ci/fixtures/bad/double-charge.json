@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "id": "bad-double-charge",
+  "description": "Same Idempotency-Key settled successfully twice",
+  "expect": "fail",
+  "events": [
+    {
+      "type": "http_request",
+      "operationId": "echoMessage",
+      "amountAtomic": "1000",
+      "headers": { "idempotency-key": "ik-double" }
+    },
+    {
+      "type": "http_response",
+      "operationId": "echoMessage",
+      "statusCode": 200
+    },
+    {
+      "type": "settle",
+      "operationId": "echoMessage",
+      "success": true,
+      "idempotencyKey": "ik-double",
+      "afterStatusCode": 200
+    },
+    {
+      "type": "http_request",
+      "operationId": "echoMessage",
+      "amountAtomic": "1000",
+      "headers": { "idempotency-key": "ik-double" }
+    },
+    {
+      "type": "http_response",
+      "operationId": "echoMessage",
+      "statusCode": 200
+    },
+    {
+      "type": "settle",
+      "operationId": "echoMessage",
+      "success": true,
+      "idempotencyKey": "ik-double",
+      "afterStatusCode": 200
+    }
+  ]
+}
