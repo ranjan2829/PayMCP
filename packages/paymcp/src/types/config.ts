@@ -44,6 +44,17 @@ export interface PaymcpEnvConfig {
   readonly budgetWindow?: "calendar_day_utc" | "rolling_24h";
   /** Optional path to budgets.yaml (also loadable via PAYMCP_BUDGETS_PATH). */
   readonly budgetsPath?: string;
+  /**
+   * Optional billing webhook URL. When set, PayMCP POSTs a signed settlement
+   * event after a successful settle (2xx path only).
+   */
+  readonly webhookUrl?: string;
+  /** HMAC-SHA256 secret for `X-PayMCP-Signature` (required when webhookUrl is set). */
+  readonly webhookSecret?: string;
+  /** Webhook HTTP timeout in ms (default 5_000). */
+  readonly webhookTimeoutMs?: number;
+  /** Max retries on 5xx/network for webhook delivery (default 2). */
+  readonly webhookMaxRetries?: number;
 }
 
 export interface OperationPrice {
@@ -91,6 +102,10 @@ export const ENV_KEYS = {
   defaultMaxDailyAtomic: "PAYMCP_DEFAULT_MAX_DAILY_ATOMIC",
   budgetWindow: "PAYMCP_BUDGET_WINDOW",
   budgetsPath: "PAYMCP_BUDGETS_PATH",
+  webhookUrl: "PAYMCP_WEBHOOK_URL",
+  webhookSecret: "PAYMCP_WEBHOOK_SECRET",
+  webhookTimeoutMs: "PAYMCP_WEBHOOK_TIMEOUT_MS",
+  webhookMaxRetries: "PAYMCP_WEBHOOK_MAX_RETRIES",
 } as const;
 
 const nonEmpty = z.string().trim().min(1);
@@ -135,8 +150,32 @@ const paymcpEnvZod = z
       .optional(),
     budgetWindow: z.enum(["calendar_day_utc", "rolling_24h"]).optional(),
     budgetsPath: nonEmpty.optional(),
+    webhookUrl: nonEmpty
+      .url({ message: `${ENV_KEYS.webhookUrl} must be a valid URL` })
+      .refine(
+        (u) => u.startsWith("http://") || u.startsWith("https://"),
+        `${ENV_KEYS.webhookUrl} must be http(s)`,
+      )
+      .optional(),
+    webhookSecret: nonEmpty
+      .refine(
+        (s) => s.length >= 16,
+        `${ENV_KEYS.webhookSecret} must be at least 16 characters`,
+      )
+      .optional(),
+    webhookTimeoutMs: z.number().int().positive().max(120_000).optional(),
+    webhookMaxRetries: z.number().int().min(0).max(5).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (data.webhookUrl !== undefined && data.webhookSecret === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${ENV_KEYS.webhookSecret} is required when ${ENV_KEYS.webhookUrl} is set`,
+        path: ["webhookSecret"],
+      });
+    }
+  });
 
 export type PaymcpEnvZod = z.infer<typeof paymcpEnvZod>;
 
@@ -195,6 +234,16 @@ export function loadConfigFromEnv(
     defaultMaxDailyAtomic: optionalEnv(env, ENV_KEYS.defaultMaxDailyAtomic),
     budgetWindow: optionalEnv(env, ENV_KEYS.budgetWindow),
     budgetsPath: optionalEnv(env, ENV_KEYS.budgetsPath),
+    webhookUrl: optionalEnv(env, ENV_KEYS.webhookUrl),
+    webhookSecret: optionalEnv(env, ENV_KEYS.webhookSecret),
+    webhookTimeoutMs: parsePositiveInt(
+      optionalEnv(env, ENV_KEYS.webhookTimeoutMs),
+      ENV_KEYS.webhookTimeoutMs,
+    ),
+    webhookMaxRetries: parseNonNegInt(
+      optionalEnv(env, ENV_KEYS.webhookMaxRetries),
+      ENV_KEYS.webhookMaxRetries,
+    ),
   };
 
   const missing: string[] = [];
@@ -258,6 +307,16 @@ export function loadConfigFromEnv(
       ? { budgetWindow: raw.budgetWindow }
       : {}),
     ...(raw.budgetsPath !== undefined ? { budgetsPath: raw.budgetsPath } : {}),
+    ...(raw.webhookUrl !== undefined ? { webhookUrl: raw.webhookUrl } : {}),
+    ...(raw.webhookSecret !== undefined
+      ? { webhookSecret: raw.webhookSecret }
+      : {}),
+    ...(raw.webhookTimeoutMs !== undefined
+      ? { webhookTimeoutMs: raw.webhookTimeoutMs }
+      : {}),
+    ...(raw.webhookMaxRetries !== undefined
+      ? { webhookMaxRetries: raw.webhookMaxRetries }
+      : {}),
   });
 
   if (!parsed.success) {
@@ -306,6 +365,16 @@ export function loadConfigFromEnv(
       : {}),
     ...(v.budgetWindow !== undefined ? { budgetWindow: v.budgetWindow } : {}),
     ...(v.budgetsPath !== undefined ? { budgetsPath: v.budgetsPath } : {}),
+    ...(v.webhookUrl !== undefined
+      ? { webhookUrl: v.webhookUrl.replace(/\/$/, "") }
+      : {}),
+    ...(v.webhookSecret !== undefined ? { webhookSecret: v.webhookSecret } : {}),
+    ...(v.webhookTimeoutMs !== undefined
+      ? { webhookTimeoutMs: v.webhookTimeoutMs }
+      : {}),
+    ...(v.webhookMaxRetries !== undefined
+      ? { webhookMaxRetries: v.webhookMaxRetries }
+      : {}),
   };
 }
 
