@@ -72,6 +72,7 @@ Client ──402──► PayMCP (paywall / MCP)
 | Path | Role |
 |------|------|
 | `packages/paymcp` (`openapi-to-paymcp`) | Publishable CLI + library |
+| `packages/harness-ci` | Agent-trace quality gate (CI harness) |
 | `examples/demo-api` | Sample Fastify API with `x-paymcp` prices |
 | `examples/buyer` | Buyer **example** using `@x402/fetch` (402 → pay → retry) |
 | `scripts/demo.mjs` | Protocol **fixture** demo (not live money) |
@@ -378,6 +379,7 @@ pnpm install
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm harness:ci   # agent-trace quality gate (good/bad fixtures)
 ```
 
 ```bash
@@ -387,6 +389,27 @@ curl -s http://127.0.0.1:8787/healthz
 ```
 
 CI (GitHub Actions): install → typecheck → build → test on Node 20.
+
+### Harness CI (agent-trace gate)
+
+[`packages/harness-ci`](packages/harness-ci) evaluates JSON agent/tool traces against PayMCP production rules and **fails the PR** when a fixture expectation is wrong:
+
+| Rule | Meaning |
+|------|---------|
+| `missing_idempotency_key` | Paid requests / settle must carry `Idempotency-Key` |
+| `settle_before_success` | Settle only after a **2xx** handler reply |
+| `double_charge` | Same key must not settle successfully twice |
+| `budget_overrun` | Must not allow spent+requested over daily max |
+| `secret_leak` | No raw `PAYMENT-SIGNATURE` / Bearer / PEM in traces |
+
+```bash
+pnpm harness:ci                          # run good/ + bad/ fixtures
+pnpm harness:ci -- --file path/to.json   # evaluate one trace
+pnpm harness:ci -- --list-rules
+```
+
+Workflow: [`.github/workflows/harness-ci.yml`](.github/workflows/harness-ci.yml) (runs on every PR alongside [`ci.yml`](.github/workflows/ci.yml)).
+
 
 ### Publish (`openapi-to-paymcp`)
 
