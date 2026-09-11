@@ -13,7 +13,9 @@
     "lint:types": "pnpm --filter openapi-to-paymcp typecheck",
     "paymcp": "node ./packages/paymcp/bin/paymcp.js",
     "publish:paymcp": "pnpm --filter openapi-to-paymcp publish --access public",
-    "live:settle": "node ./scripts/live-settle.mjs"
+    "live:settle": "node ./scripts/live-settle.mjs",
+    "buyer:example": "pnpm --filter @paymcp/buyer-example start",
+    "buyer:probe": "pnpm --filter @paymcp/buyer-example probe"
   },
   "engines": {
     "node": ">=20"

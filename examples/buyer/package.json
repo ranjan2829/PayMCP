@@ -1,0 +1,29 @@
+{
+  "name": "@paymcp/buyer-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Example x402 buyer using @x402/fetch against a PayMCP 402 paywall (not a new protocol)",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "tsx src/buyer.ts",
+    "probe": "tsx src/buyer.ts --probe",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@x402/evm": "^2.25.0",
+    "@x402/fetch": "^2.25.0",
+    "viem": "^2.48.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
