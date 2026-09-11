@@ -4,6 +4,7 @@ import type {
   FastifyReply,
   FastifyRequest,
   preHandlerHookHandler,
+  onSendHookHandler,
 } from "fastify";
 import type { PaymcpEnvConfig } from "../types/config.js";
 import type { PriceTable } from "../pricing/resolve.js";
@@ -26,7 +27,12 @@ import { buildPaymentRequired, buildResource } from "../settler/challenge.js";
 import { createLedger } from "../ledger/create.js";
 import { deriveIdempotencyKey } from "../ledger/sqlite.js";
 import type { Ledger } from "../ledger/types.js";
-import type { PaymentAccept, PaymentPayload } from "../types/x402.js";
+import type {
+  PaymentAccept,
+  PaymentPayload,
+  PaymentRequired,
+  SettlementResponse,
+} from "../types/x402.js";
 import { SimpleRateLimiter } from "../http/rate-limit.js";
 import { createLogger } from "../http/logger.js";
 import { summarizePaymentSignatureHeader } from "../http/sanitize.js";
@@ -41,9 +47,25 @@ export interface PaywallOptions {
   readonly publicBaseUrl?: string;
 }
 
+/** Pending payment attached in preHandler; settle runs only after a 2xx reply. */
+interface PendingPayment {
+  readonly paymentPayload: PaymentPayload;
+  readonly accept: PaymentAccept;
+  readonly clientIdem: string;
+  readonly operationId: string;
+  readonly amount: string;
+  readonly required: PaymentRequired;
+  /** When ledger already has a settled row for this idempotency key. */
+  readonly priorSettlement?: SettlementResponse;
+}
+
 declare module "fastify" {
   interface FastifyContextConfig {
     paymcpOperationId?: string;
+  }
+
+  interface FastifyRequest {
+    paymcpPendingPayment?: PendingPayment;
   }
 }
 
@@ -76,6 +98,8 @@ async function paymcpPaywallImpl(
           options.config.rateLimitWindowMs ?? 60_000,
         )
       : undefined;
+
+  app.decorateRequest("paymcpPendingPayment", undefined);
 
   const hook: preHandlerHookHandler = async (request, reply) => {
     const operationId = resolveOperationId(request, options);
@@ -164,21 +188,32 @@ async function paymcpPaywallImpl(
 
     const existing = await ledger.findByIdempotencyKey(clientIdem);
     if (existing !== undefined && existing.status === "settled") {
+      const priorSettlement: SettlementResponse = {
+        success: true,
+        transaction: existing.transaction,
+        network: existing.network,
+        payer: existing.payer,
+      };
       reply.header(
         HEADER_PAYMENT_RESPONSE,
-        encodeHeaderPayload({
-          success: true,
-          transaction: existing.transaction,
-          network: existing.network,
-          payer: existing.payer,
-        }),
+        encodeHeaderPayload(priorSettlement),
       );
+      request.paymcpPendingPayment = {
+        paymentPayload,
+        accept,
+        clientIdem,
+        operationId,
+        amount: price.amount,
+        required,
+        priorSettlement,
+      };
       return;
     }
 
-    let settlement;
+    // Early verify (signature validity) — settle only after a 2xx handler reply.
+    let verification;
     try {
-      settlement = await settler.verifyAndSettle({
+      verification = await settler.verify({
         paymentPayload,
         paymentRequirements: accept,
       });
@@ -201,13 +236,111 @@ async function paymcpPaywallImpl(
       throw err;
     }
 
-    reply.header(HEADER_PAYMENT_RESPONSE, encodeHeaderPayload(settlement));
-
-    if (!settlement.success) {
+    if (!verification.isValid) {
+      const reason = verification.invalidReason ?? "payment_invalid";
       await ledger.recordSettlement({
         idempotencyKey: clientIdem,
         operationId,
         amount: price.amount,
+        network: accept.network,
+        payer: verification.payer ?? "",
+        transaction: "",
+        status: "failed",
+        errorReason: reason,
+      });
+      await reply
+        .code(402)
+        .header(
+          HEADER_PAYMENT_REQUIRED,
+          encodeHeaderPayload({
+            ...required,
+            error: reason,
+          }),
+        )
+        .send({
+          error: "payment_failed",
+          reason,
+        });
+      return;
+    }
+
+    request.paymcpPendingPayment = {
+      paymentPayload,
+      accept,
+      clientIdem,
+      operationId,
+      amount: price.amount,
+      required,
+    };
+  };
+
+  const settleOnSuccess: onSendHookHandler = async (request, reply, payload) => {
+    const pending = request.paymcpPendingPayment;
+    if (pending === undefined) {
+      return payload;
+    }
+
+    // Already settled for this idempotency key — never re-settle.
+    if (pending.priorSettlement !== undefined) {
+      if (!reply.hasHeader(HEADER_PAYMENT_RESPONSE)) {
+        reply.header(
+          HEADER_PAYMENT_RESPONSE,
+          encodeHeaderPayload(pending.priorSettlement),
+        );
+      }
+      return payload;
+    }
+
+    const statusCode = reply.statusCode;
+    const is2xx = statusCode >= 200 && statusCode < 300;
+
+    if (!is2xx) {
+      await ledger.recordSettlement({
+        idempotencyKey: pending.clientIdem,
+        operationId: pending.operationId,
+        amount: pending.amount,
+        network: pending.accept.network,
+        payer: "",
+        transaction: "",
+        status: "failed",
+        errorReason: `upstream_http_${statusCode}`,
+      });
+      return payload;
+    }
+
+    let settlement: SettlementResponse;
+    try {
+      settlement = await settler.settle({
+        paymentPayload: pending.paymentPayload,
+        paymentRequirements: pending.accept,
+      });
+    } catch (err) {
+      if (
+        err instanceof FacilitatorHttpError ||
+        err instanceof FacilitatorTransportError
+      ) {
+        log.warn("facilitator_unavailable", {
+          operationId: pending.operationId,
+          detail: err.message,
+          status: err instanceof FacilitatorHttpError ? err.status : undefined,
+        });
+        reply.code(502);
+        reply.removeHeader(HEADER_PAYMENT_RESPONSE);
+        return JSON.stringify({
+          error: "facilitator_unavailable",
+          detail: err.message,
+        });
+      }
+      throw err;
+    }
+
+    reply.header(HEADER_PAYMENT_RESPONSE, encodeHeaderPayload(settlement));
+
+    if (!settlement.success) {
+      await ledger.recordSettlement({
+        idempotencyKey: pending.clientIdem,
+        operationId: pending.operationId,
+        amount: pending.amount,
         network: settlement.network,
         payer: settlement.payer,
         transaction: settlement.transaction,
@@ -216,34 +349,35 @@ async function paymcpPaywallImpl(
           ? { errorReason: settlement.errorReason }
           : {}),
       });
-      await reply
-        .code(402)
-        .header(
-          HEADER_PAYMENT_REQUIRED,
-          encodeHeaderPayload({
-            ...required,
-            error: settlement.errorReason ?? "payment_failed",
-          }),
-        )
-        .send({
-          error: "payment_failed",
-          reason: settlement.errorReason ?? "settlement_failed",
-        });
-      return;
+      reply.code(402);
+      reply.header(
+        HEADER_PAYMENT_REQUIRED,
+        encodeHeaderPayload({
+          ...pending.required,
+          error: settlement.errorReason ?? "payment_failed",
+        }),
+      );
+      return JSON.stringify({
+        error: "payment_failed",
+        reason: settlement.errorReason ?? "settlement_failed",
+      });
     }
 
     await ledger.recordSettlement({
-      idempotencyKey: clientIdem,
-      operationId,
-      amount: price.amount,
+      idempotencyKey: pending.clientIdem,
+      operationId: pending.operationId,
+      amount: pending.amount,
       network: settlement.network,
       payer: settlement.payer,
       transaction: settlement.transaction,
       status: "settled",
     });
+
+    return payload;
   };
 
   app.addHook("preHandler", hook);
+  app.addHook("onSend", settleOnSuccess);
 
   app.addHook("onClose", async () => {
     await ledger.close();

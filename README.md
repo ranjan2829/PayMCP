@@ -12,7 +12,7 @@ Turn an existing **OpenAPI 3.x** spec into a **paid MCP server** with HTTP 402 +
 
 PayMCP is an **adapter**, not a new payment protocol. It compiles your OpenAPI operations into:
 
-- a **paid MCP server** (tools that challenge, settle, then call upstream)
+- a **paid MCP server** (tools that challenge, verify, call upstream, then settle on 2xx)
 - a **Fastify paywall** (HTTP 402 + x402 headers on paid routes)
 - a **settlement ledger** (SQLite by default, optional Postgres)
 
@@ -44,10 +44,12 @@ sequenceDiagram
   Client->>PayMCP: request + PAYMENT-SIGNATURE
   PayMCP->>Fac: POST /verify
   Fac-->>PayMCP: ok
+  PayMCP->>Up: execute upstream / handler
+  Up-->>PayMCP: 2xx success
+  Note over PayMCP: Settle only after 2xx (not on entry / 4xx / 5xx)
   PayMCP->>Fac: POST /settle
   Fac-->>PayMCP: SettlementResponse
   PayMCP->>PayMCP: ledger (idempotent)
-  PayMCP->>Up: execute upstream
   PayMCP-->>Client: 200 + PAYMENT-RESPONSE
 ```
 
@@ -56,14 +58,16 @@ ASCII equivalent:
 ```
 Client ──402──► PayMCP (paywall / MCP)
                    │  PAYMENT-REQUIRED → client signs
-                   │  PAYMENT-SIGNATURE → FacilitatorSettler
+                   │  PAYMENT-SIGNATURE → verify (early)
                    ▼
-             facilitator  (/verify → /settle)
+             upstream / handler
+                   │  2xx only → FacilitatorSettler.settle
+                   │  4xx/5xx  → do NOT settle (ledger failed)
                    ▼
-             ledger (SQLite | Postgres)
-                   ▼
-             upstream OpenAPI + PAYMENT-RESPONSE
+             ledger (SQLite | Postgres) + PAYMENT-RESPONSE
 ```
+
+**Settlement timing:** `FacilitatorSettler.settle` runs only after a successful upstream/handler response (**2xx**), not on tool-call or paywall entry. Verify may run early; failed upstream responses never settle. Already-settled idempotency keys skip re-settle.
 
 | Path | Role |
 |------|------|
