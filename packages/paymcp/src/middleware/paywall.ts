@@ -43,6 +43,10 @@ import {
   resolveAccessControls,
 } from "../controls/resolve.js";
 import { loadBudgetsFile } from "../controls/parse.js";
+import {
+  createSettlementWebhookSender,
+  type SettlementWebhookSender,
+} from "../webhook/settlement.js";
 
 export interface PaywallOptions {
   readonly config: PaymcpEnvConfig;
@@ -56,6 +60,8 @@ export interface PaywallOptions {
   readonly accessControls?: AccessControls;
   /** Optional tenant id resolver (e.g. from x-paymcp-tenant header). */
   readonly tenantIdForRequest?: (req: FastifyRequest) => string | undefined;
+  /** Optional settlement webhook notifier (defaults from config webhook URL). */
+  readonly webhook?: SettlementWebhookSender;
 }
 
 /** Pending payment attached in preHandler; settle runs only after a 2xx reply. */
@@ -100,6 +106,8 @@ async function paymcpPaywallImpl(
         : {}),
     });
   const ledger = options.ledger ?? (await createLedger(options.config));
+  const webhook =
+    options.webhook ?? createSettlementWebhookSender(options.config);
 
   const controls: AccessControls =
     options.accessControls ??
@@ -463,6 +471,24 @@ async function paymcpPaywallImpl(
       transaction: settlement.transaction,
       status: "settled",
     });
+
+    if (webhook !== undefined) {
+      const requestId = (
+        request as FastifyRequest & { requestId?: string }
+      ).requestId;
+      await webhook.notify({
+        operationId: pending.operationId,
+        amount: pending.amount,
+        network: settlement.network,
+        asset: pending.accept.asset,
+        payer: settlement.payer,
+        transaction: settlement.transaction,
+        idempotencyKey: pending.clientIdem,
+        ...(requestId !== undefined && requestId.length > 0
+          ? { requestId }
+          : {}),
+      });
+    }
 
     return payload;
   };

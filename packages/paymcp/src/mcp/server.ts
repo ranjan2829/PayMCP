@@ -41,6 +41,10 @@ import {
   resolveAccessControls,
 } from "../controls/resolve.js";
 import { loadBudgetsFile } from "../controls/parse.js";
+import {
+  createSettlementWebhookSender,
+  type SettlementWebhookSender,
+} from "../webhook/settlement.js";
 
 export interface PaidMcpServerOptions {
   readonly config: PaymcpEnvConfig;
@@ -53,6 +57,8 @@ export interface PaidMcpServerOptions {
   readonly ledger?: Ledger;
   readonly fetchImpl?: typeof fetch;
   readonly accessControls?: AccessControls;
+  /** Optional settlement webhook notifier (defaults from config webhook URL). */
+  readonly webhook?: SettlementWebhookSender;
 }
 
 export async function createPaidMcpServer(
@@ -93,6 +99,8 @@ export async function createPaidMcpServer(
         : {}),
     });
   const ledger = options.ledger ?? (await createLedger(options.config));
+  const webhook =
+    options.webhook ?? createSettlementWebhookSender(options.config);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   const server = new Server(
@@ -304,6 +312,18 @@ export async function createPaidMcpServer(
         transaction: settlement.transaction,
         status: "settled",
       });
+
+      if (webhook !== undefined) {
+        await webhook.notify({
+          operationId: op.operationId,
+          amount: paidCheck.price.amount,
+          network: settlement.network,
+          asset: payResult.accept.asset,
+          payer: settlement.payer,
+          transaction: settlement.transaction,
+          idempotencyKey: payResult.clientIdem,
+        });
+      }
 
       return textResult(
         JSON.stringify(
