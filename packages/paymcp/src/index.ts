@@ -92,6 +92,22 @@ export {
   type ExportDisputePackInput,
 } from "./dispute/pack.js";
 
+
+export {
+  WEBHOOK_SIGNATURE_HEADER,
+  SETTLEMENT_WEBHOOK_EVENT,
+  SETTLEMENT_WEBHOOK_VERSION,
+  SettlementWebhookSender,
+  createSettlementWebhookSender,
+  isRetryableWebhookError,
+  WebhookTransportError,
+  WebhookTimeoutError,
+  WebhookHttpError,
+  type SettlementWebhookPayload,
+  type SettlementWebhookSenderOptions,
+  type NotifySettlementInput,
+} from "./webhook/index.js";
+
 export {
   buildPriceTable,
   loadPricesFile,
