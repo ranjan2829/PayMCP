@@ -23,3 +23,18 @@ export {
   type Listing,
   type CatalogQuery,
 } from "./listings/index.js";
+export {
+  BuyerIdSchema,
+  TopUpInputSchema,
+  BalanceSchema,
+  SpendLogEntrySchema,
+  SpendLogQuerySchema,
+  BuyerBalanceLedger,
+  type TopUpInput,
+  type Balance,
+  type SpendLogEntry,
+  type SpendLogQuery,
+  type BeginSpendInput,
+  type BeginSpendResult,
+  type CompleteSpendInput,
+} from "./ledger/index.js";
