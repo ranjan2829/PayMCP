@@ -270,7 +270,7 @@ export async function runStoreCli(argv: string[]): Promise<void> {
         fetchImpl: mockFetch,
       });
 
-      console.log(`\n== 3) invoke ${target.id} =="`);
+      console.log(`\n== 3) invoke ${target.id} ==`);
       const result = await gateway.invoke({
         listingId: target.id,
         buyerId,

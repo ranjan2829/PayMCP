@@ -29,9 +29,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "node dist/server.js",
-    "dev": "tsx src/server.ts",
-    "cli": "tsx src/cli/index.ts",
-    "seed": "tsx src/cli/index.ts seed"
+    "dev": "tsx src/cli/run.ts serve",
+    "cli": "tsx src/cli/run.ts",
+    "seed": "tsx src/cli/run.ts seed"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
