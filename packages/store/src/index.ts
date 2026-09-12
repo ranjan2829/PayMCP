@@ -5,6 +5,7 @@ export const STORE_PACKAGE_VERSION = "0.1.0" as const;
 
 export { StoreError, isStoreError, type StoreErrorCode } from "./errors/index.js";
 export { openStoreDb } from "./db.js";
+export { loadStoreEnv, type StoreEnvConfig } from "./config/env.js";
 export {
   AtomicAmountSchema,
   ListingStatusSchema,
@@ -38,3 +39,16 @@ export {
   type BeginSpendResult,
   type CompleteSpendInput,
 } from "./ledger/index.js";
+export {
+  InvokeGateway,
+  buildUpstreamUrl,
+  newIdempotencyKey,
+  registerStoreRoutes,
+  createStoreApp,
+  type InvokeRequest,
+  type InvokeSuccess,
+  type InvokeGatewayOptions,
+  type StoreAppDeps,
+  type CreateStoreAppOptions,
+  type StoreApp,
+} from "./gateway/index.js";
