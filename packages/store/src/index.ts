@@ -52,3 +52,16 @@ export {
   type CreateStoreAppOptions,
   type StoreApp,
 } from "./gateway/index.js";
+export {
+  SellerKit,
+  type SellerKitPriceOverride,
+  type CompileSellerListingInput,
+  type CompiledSellerListing,
+} from "./seller/index.js";
+export {
+  seedCatalog,
+  fixturesDir,
+  type SeedCatalogOptions,
+  type SeedCatalogResult,
+} from "./seed/index.js";
+export { runStoreCli } from "./cli/index.js";
