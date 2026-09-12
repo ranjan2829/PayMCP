@@ -38,20 +38,26 @@ export async function createStoreApp(
 
   let webhook = undefined;
   if (options.env.PAYMCP_WEBHOOK_URL !== undefined) {
-    const paymcpCfg = {
+    const secret = options.env.PAYMCP_WEBHOOK_SECRET;
+    if (secret === undefined) {
+      throw new Error(
+        "PAYMCP_WEBHOOK_SECRET is required when PAYMCP_WEBHOOK_URL is set",
+      );
+    }
+    const paymcpCfg: PaymcpEnvConfig = {
       facilitatorUrl: "https://x402.org/facilitator",
       payTo: options.env.STORE_SEED_PAY_TO,
-      network: options.env.STORE_SEED_NETWORK as PaymcpEnvConfig["network"],
+      network: options.env.STORE_SEED_NETWORK,
       asset: "0x0000000000000000000000000000000000000000",
       webhookUrl: options.env.PAYMCP_WEBHOOK_URL,
-      webhookSecret: options.env.PAYMCP_WEBHOOK_SECRET,
+      webhookSecret: secret,
       ...(options.env.PAYMCP_WEBHOOK_TIMEOUT_MS !== undefined
         ? { webhookTimeoutMs: options.env.PAYMCP_WEBHOOK_TIMEOUT_MS }
         : {}),
       ...(options.env.PAYMCP_WEBHOOK_MAX_RETRIES !== undefined
         ? { webhookMaxRetries: options.env.PAYMCP_WEBHOOK_MAX_RETRIES }
         : {}),
-    } satisfies PaymcpEnvConfig;
+    };
     webhook = createSettlementWebhookSender(paymcpCfg);
   }
 

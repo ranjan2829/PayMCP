@@ -16,7 +16,10 @@
     "live:settle": "node ./scripts/live-settle.mjs",
     "buyer:example": "pnpm --filter @paymcp/buyer-example start",
     "buyer:probe": "pnpm --filter @paymcp/buyer-example probe",
-    "harness:ci": "pnpm --filter @paymcp/harness-ci harness:ci"
+    "harness:ci": "pnpm --filter @paymcp/harness-ci harness:ci",
+    "store:dev": "pnpm --filter @paymcp/store dev",
+    "store:seed": "pnpm --filter @paymcp/store seed",
+    "store:buyer-flow": "pnpm --filter @paymcp/store cli buyer-flow"
   },
   "engines": {
     "node": ">=20"
