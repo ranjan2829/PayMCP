@@ -1,0 +1,25 @@
+openapi: 3.0.3
+info:
+  title: Weather Tool
+  version: 1.0.0
+  description: Demo weather lookup for PayMCP Store
+servers:
+  - url: http://127.0.0.1:8787
+paths:
+  /weather:
+    get:
+      operationId: getWeather
+      summary: Get weather
+      description: Demo weather by city
+      x-paymcp:
+        amount: "25000"
+        description: "$0.025 USDC per lookup"
+      parameters:
+        - name: city
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Weather payload

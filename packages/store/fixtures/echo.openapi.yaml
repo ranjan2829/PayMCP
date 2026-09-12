@@ -1,0 +1,29 @@
+openapi: 3.0.3
+info:
+  title: Echo Tool
+  version: 1.0.0
+  description: Simple echo API for PayMCP Store demos
+servers:
+  - url: http://127.0.0.1:8787
+paths:
+  /echo:
+    post:
+      operationId: echoMessage
+      summary: Echo a message
+      description: Returns the message you send
+      x-paymcp:
+        amount: "10000"
+        description: "$0.01 USDC per echo"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+      responses:
+        "200":
+          description: Echoed

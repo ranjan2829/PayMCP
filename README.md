@@ -73,10 +73,29 @@ Client ──402──► PayMCP (paywall / MCP)
 |------|------|
 | `packages/paymcp` (`openapi-to-paymcp`) | Publishable CLI + library |
 | `packages/harness-ci` | Agent-trace quality gate (CI harness) |
+| `packages/store` (`@paymcp/store`) | Paid-agent-tools marketplace (listings, credit ledger, invoke) |
 | `examples/demo-api` | Sample Fastify API with `x-paymcp` prices |
 | `examples/buyer` | Buyer **example** using `@x402/fetch` (402 → pay → retry) |
 | `scripts/demo.mjs` | Protocol **fixture** demo (not live money) |
 | `scripts/live-settle.mjs` | **Live** settle (gated by `PAYMCP_LIVE=1`) |
+
+## PayMCP Store (`@paymcp/store`)
+
+Mini **paid-agent-tools marketplace** on top of this adapter:
+
+- **Listings** — OpenAPI-backed tool catalog with atomic USDC/credit prices
+- **Buyer credits** — top-up → invoke → spend log (no `EVM_PRIVATE_KEY` on the happy path)
+- **Settle-on-success debit** — hold balance, proxy upstream, finalize debit only on 2xx
+- **Seller kit** — OpenAPI + prices → compile ops → register listing
+- **Seed** — demo echo/weather + live x402 docs for `https://grawwww.xyz/api/render/image` (0.10 USDC)
+
+```bash
+pnpm --filter @paymcp/store seed
+pnpm --filter @paymcp/store dev          # http://127.0.0.1:8790
+pnpm --filter @paymcp/store cli buyer-flow buyer_demo
+```
+
+Full docs: [`packages/store/README.md`](packages/store/README.md). Store env keys are in [`.env.example`](.env.example) (`STORE_*`).
 
 ## Configuration
 

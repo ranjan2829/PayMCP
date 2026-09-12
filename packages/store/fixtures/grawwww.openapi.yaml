@@ -1,0 +1,30 @@
+openapi: 3.0.3
+info:
+  title: grawwww render/image
+  version: 1.0.0
+  description: >
+    External live x402 target — POST https://grawwww.xyz/api/render/image
+    priced at 0.10 USDC (100000 atomic @ 6 decimals). Buyers may pay on-chain
+    with @x402/fetch, or use store balance when a local mock upstream is wired.
+servers:
+  - url: https://grawwww.xyz
+paths:
+  /api/render/image:
+    post:
+      operationId: renderImage
+      summary: Render image (x402)
+      description: Live external x402 endpoint documented for store catalog tests
+      x-paymcp:
+        amount: "100000"
+        description: "0.10 USDC"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Rendered image / JSON
+        "402":
+          description: Payment Required (x402)
