@@ -69,9 +69,26 @@ export {
 export {
   seedCatalog,
   fixturesDir,
+  seedLiveListing,
+  requireLiveListingEnv,
+  LIVE_PUBLIC_LISTING_ID,
   type SeedCatalogOptions,
   type SeedCatalogResult,
+  type LiveListingEnv,
+  type SeedLiveListingResult,
 } from "./seed/index.js";
+export {
+  ReceiptService,
+  PublicReceiptSchema,
+  PublicReceiptListQuerySchema,
+  renderReceiptHtml,
+  explorerTxUrl,
+  networkLabel,
+  redactBuyerId,
+  type ReceiptServiceOptions,
+  type PublicReceipt,
+  type PublicReceiptListQuery,
+} from "./receipts/index.js";
 export {
   StripeFundingClient,
   verifyStripeSignature,

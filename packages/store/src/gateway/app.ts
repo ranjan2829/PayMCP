@@ -20,6 +20,7 @@ import {
 } from "../payout/index.js";
 import { InvokeGateway } from "./invoke.js";
 import { registerStoreRoutes } from "./routes.js";
+import { ReceiptService } from "../receipts/service.js";
 
 export interface CreateStoreAppOptions {
   readonly env: StoreEnvConfig;
@@ -178,12 +179,23 @@ export async function createStoreApp(
     },
   );
 
+  const receipts = new ReceiptService({
+    listings,
+    ledger,
+    payouts: payoutQueue,
+    ...(options.env.STORE_PUBLIC_BASE_URL !== undefined
+      ? { publicBaseUrl: options.env.STORE_PUBLIC_BASE_URL }
+      : {}),
+    assetLabel: options.env.PAYMCP_ASSET_NAME ?? "USDC",
+  });
+
   await registerStoreRoutes(app, {
     listings,
     ledger,
     invoke,
     ...(stripe !== undefined ? { stripe } : {}),
     payouts,
+    receipts,
     ...(options.env.STORE_PUBLIC_BASE_URL !== undefined
       ? { publicBaseUrl: options.env.STORE_PUBLIC_BASE_URL }
       : {}),

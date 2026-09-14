@@ -22,6 +22,8 @@ There is **no faucet**, no free mint route, and no zero-address `payTo` default.
 | **Seller payout** | On invoke 2xx → enqueue + execute USDC transfer to listing `payTo` |
 | **Gateway** | Fastify routes for catalog, listings, funding, balance, spend-log, invoke, payouts flush |
 | **Seed** | Echo, weather, and **grawwww** `render/image` (0.10 USDC) external x402 live target |
+| **Public receipts** | `GET /v1/receipts/:spendId` + recent list — amount, listing, redacted buyer, settle/payout, explorer link |
+| **Live listing** | `seed-live` — one production listing; fail closed without real `STORE_SEED_PAY_TO` / asset / facilitator |
 
 ## Quickstart
 
@@ -54,7 +56,9 @@ pnpm --filter @paymcp/store dev
 | `GET` | `/v1/balances/:buyerId` | Credit balance |
 | `GET` | `/v1/spend-log` | Query spend log |
 | `POST` | `/v1/payouts/flush` | Retry pending/failed seller payouts |
-| `POST` | `/v1/listings/:id/invoke` | **Requires `Idempotency-Key`**; debit + seller payout after upstream 2xx |
+| `GET` | `/v1/receipts` | Recent public settlements (limit) |
+| `GET` | `/v1/receipts/:id` | Public receipt by spend id or payout tx (`?format=html` for dark page) |
+| `POST` | `/v1/listings/:id/invoke` | **Requires `Idempotency-Key`**; debit + seller payout after upstream 2xx; returns `receiptUrl` |
 
 ### Invoke body
 
@@ -125,14 +129,22 @@ Buyers can still pay on-chain with `@x402/fetch` (see `examples/buyer`) using
 ```
 paymcp-store serve
 paymcp-store seed [--force]
+paymcp-store seed-live [--force]   # ONE live Base listing (fail-closed env)
 paymcp-store fund-checkout <buyerId> <fiatAmountCents>
 paymcp-store catalog
 paymcp-store balance <buyerId>
 paymcp-store invoke <listingId> <buyerId> [--body JSON] [--path PATH]
 paymcp-store spend-log [buyerId]
+paymcp-store receipt <spendId|tx>
+paymcp-store receipts [limit]
 paymcp-store payouts-flush
 paymcp-store buyer-flow [buyerId]   # requires already-funded balance (no faucet)
 ```
+
+## Live Base receipt demo
+
+See [docs/LIVE_BASE_DEMO.md](./docs/LIVE_BASE_DEMO.md) for the exact curl flow (402 → fund → invoke → receipt URL) for an X screenshot.
+
 
 ## Env
 

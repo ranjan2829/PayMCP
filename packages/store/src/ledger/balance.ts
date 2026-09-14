@@ -364,6 +364,39 @@ export class BuyerBalanceLedger {
     };
   }
 
+  findSpendById(id: string): SpendLogEntry | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM spend_log WHERE id = ?`)
+      .get(id) as SpendRow | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    return mapSpendRow(row);
+  }
+
+  /** Settled spends newest-first — public receipt feed. */
+  listSettledSpends(query: { limit?: number; offset?: number } = {}): {
+    entries: SpendLogEntry[];
+    total: number;
+  } {
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
+    const offset = Math.max(query.offset ?? 0, 0);
+    const countRow = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM spend_log WHERE status = 'settled'`)
+      .get() as { c: number };
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM spend_log WHERE status = 'settled'
+         ORDER BY updated_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(limit, offset) as SpendRow[];
+    return {
+      entries: rows.map(mapSpendRow),
+      total: countRow.c,
+    };
+  }
+
   findSpendByIdem(key: string): SpendLogEntry | undefined {
     const row = this.db
       .prepare(`SELECT * FROM spend_log WHERE idempotency_key = ?`)

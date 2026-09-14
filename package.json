@@ -19,7 +19,8 @@
     "harness:ci": "pnpm --filter @paymcp/harness-ci harness:ci",
     "store:dev": "pnpm --filter @paymcp/store dev",
     "store:seed": "pnpm --filter @paymcp/store seed",
-    "store:buyer-flow": "pnpm --filter @paymcp/store cli buyer-flow"
+    "store:buyer-flow": "pnpm --filter @paymcp/store cli buyer-flow",
+    "store:seed-live": "pnpm --filter @paymcp/store cli seed-live"
   },
   "engines": {
     "node": ">=20"

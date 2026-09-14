@@ -21,7 +21,8 @@
     "dist",
     "bin",
     "README.md",
-    "fixtures"
+    "fixtures",
+    "docs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
