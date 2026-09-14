@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Store: public receipt surface (`GET /v1/receipts`, HTML page), `seed-live` Base demo listing (fail-closed env), buyer demo curl docs for X screenshots.
 - Store: remove faucet top-up; Stripe Checkout + webhook funding; seller USDC payout on invoke settle; require `STORE_SEED_PAY_TO`; scrub placeholder secrets from docs/env examples.
 
 
