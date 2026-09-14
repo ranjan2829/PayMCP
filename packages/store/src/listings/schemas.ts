@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+/** Settlement rail preference for dual-rail listings (x402 USDC | Visa VIC | auto). */
+export const RailPreferenceSchema = z.enum(["x402", "visa", "auto"]);
+export type RailPreference = z.infer<typeof RailPreferenceSchema>;
+
 /** Atomic USDC / credit units as a non-negative decimal integer string. */
 export const AtomicAmountSchema = z
   .string()
@@ -75,6 +79,11 @@ export const CreateListingInputSchema = z
      * (buyers may pay on-chain via @x402/fetch instead of store balance).
      */
     externalX402: z.boolean().default(false),
+    /**
+     * Settlement rail preference for this listing.
+     * x402 = USDC facilitator; visa = Visa VIC credentials; auto = TAP+visa when available.
+     */
+    rail: RailPreferenceSchema.default("x402"),
     /** Optional tags for catalog filtering. */
     tags: z.array(z.string().min(1).max(64)).max(32).default([]),
   })
@@ -107,6 +116,7 @@ export const UpdateListingInputSchema = z
       .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
       .optional(),
     externalX402: z.boolean().optional(),
+    rail: RailPreferenceSchema.optional(),
     tags: z.array(z.string().min(1).max(64)).max(32).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {
@@ -131,6 +141,7 @@ export const ListingSchema = z.object({
   defaultPath: z.string(),
   defaultMethod: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   externalX402: z.boolean(),
+  rail: RailPreferenceSchema,
   tags: z.array(z.string()),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),

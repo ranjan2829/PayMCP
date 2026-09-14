@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- PayMCP: Visa Trusted Agent Protocol (TAP) verifier + Visa VIC settler dual rail (`rail: x402|visa|auto`); receipts include settled rail; docs in `packages/paymcp/docs/VISA_TAP_VIC.md`.
 - Store: public receipt surface (`GET /v1/receipts`, HTML page), `seed-live` Base demo listing (fail-closed env), buyer demo curl docs for X screenshots.
 - Store: remove faucet top-up; Stripe Checkout + webhook funding; seller USDC payout on invoke settle; require `STORE_SEED_PAY_TO`; scrub placeholder secrets from docs/env examples.
 

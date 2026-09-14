@@ -23,6 +23,20 @@ import {
   FacilitatorHttpError,
   FacilitatorTransportError,
 } from "../settler/facilitator.js";
+import {
+  VisaVicSettler,
+  VisaHttpError,
+  VisaTransportError,
+  HEADER_VISA_PAYMENT,
+  parseVisaPaymentPayload,
+  type VisaPaymentPayload,
+} from "../settler/visa.js";
+import {
+  resolveSettlementRail,
+  RailConfigError,
+  type RailPreference,
+  type SettlementRail,
+} from "../settler/rail.js";
 import { buildPaymentRequired, buildResource } from "../settler/challenge.js";
 import { createLedger } from "../ledger/create.js";
 import { deriveIdempotencyKey } from "../ledger/sqlite.js";
@@ -54,6 +68,13 @@ export interface PaywallOptions {
   /** Map route → operationId. If omitted, uses request.routeOptions.config.paymcpOperationId. */
   readonly operationIdForRequest?: (req: FastifyRequest) => string | undefined;
   readonly settler?: FacilitatorSettler;
+  /** Visa VIC settler for rail=visa|auto. Required when preference resolves to visa. */
+  readonly visaSettler?: VisaVicSettler;
+  /**
+   * Settlement rail preference (default x402).
+   * auto: prefer visa when request has TAP + visaSettler; else x402.
+   */
+  readonly rail?: RailPreference;
   readonly ledger?: Ledger;
   readonly publicBaseUrl?: string;
   /** Pre-built access controls; else resolved from config (+ optional prices/budgets files). */
@@ -66,7 +87,9 @@ export interface PaywallOptions {
 
 /** Pending payment attached in preHandler; settle runs only after a 2xx reply. */
 interface PendingPayment {
-  readonly paymentPayload: PaymentPayload;
+  readonly rail: SettlementRail;
+  readonly paymentPayload?: PaymentPayload;
+  readonly visaPayment?: VisaPaymentPayload;
   readonly accept: PaymentAccept;
   readonly clientIdem: string;
   readonly operationId: string;
@@ -105,6 +128,8 @@ async function paymcpPaywallImpl(
         ? { maxRetries: options.config.facilitatorMaxRetries }
         : {}),
     });
+  const visaSettler = options.visaSettler;
+  const railPreference: RailPreference = options.rail ?? "x402";
   const ledger = options.ledger ?? (await createLedger(options.config));
   const webhook =
     options.webhook ?? createSettlementWebhookSender(options.config);
@@ -196,6 +221,174 @@ async function paymcpPaywallImpl(
       return;
     }
 
+    let rail: SettlementRail;
+    try {
+      rail = resolveSettlementRail({
+        preference: railPreference,
+        tapPresent: request.paymcpTap !== undefined,
+        visaEnabled: visaSettler !== undefined,
+        x402Enabled: true,
+      });
+    } catch (err) {
+      const detail =
+        err instanceof RailConfigError ? err.message : "rail_misconfigured";
+      await reply.code(503).send({ error: "rail_unavailable", detail });
+      return;
+    }
+
+    if (rail === "visa") {
+      if (visaSettler === undefined) {
+        await reply.code(503).send({
+          error: "rail_unavailable",
+          detail: "Visa VIC settler is not configured",
+        });
+        return;
+      }
+      const visaHeader = headerValue(request, HEADER_VISA_PAYMENT);
+      if (visaHeader === undefined) {
+        await reply.code(402).send({
+          error: "payment_required",
+          rail: "visa",
+          detail:
+            "VISA-PAYMENT header required (Visa Intelligent Commerce credential reference)",
+          accepts: [
+            {
+              rail: "visa",
+              amount: price.amount,
+              currency: "USD",
+              network: "visa:vic",
+            },
+          ],
+        });
+        return;
+      }
+      let visaPayment: VisaPaymentPayload;
+      try {
+        visaPayment = decodeHeaderPayload(visaHeader, parseVisaPaymentPayload);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "invalid_visa_payment";
+        await reply
+          .code(400)
+          .send({ error: "invalid_visa_payment", detail: message });
+        return;
+      }
+      if (visaPayment.amount !== price.amount) {
+        await reply.code(402).send({
+          error: "payment_terms_mismatch",
+          rail: "visa",
+          detail: "VISA-PAYMENT amount does not match price",
+        });
+        return;
+      }
+      const clientIdem =
+        headerValue(request, HEADER_IDEMPOTENCY_KEY) ??
+        deriveIdempotencyKey({
+          operationId,
+          paymentSignatureHeader: visaHeader,
+        });
+      const claim = await ledger.beginPending({
+        idempotencyKey: clientIdem,
+        operationId,
+        amount: price.amount,
+        network: visaPayment.network ?? "visa:vic",
+        ...(tenantId !== undefined ? { tenantId } : {}),
+      });
+      if (claim.kind === "already_settled") {
+        const priorSettlement: SettlementResponse = {
+          success: true,
+          transaction: claim.entry.transaction,
+          network: claim.entry.network,
+          payer: claim.entry.payer,
+          rail: "visa",
+        };
+        reply.header(
+          HEADER_PAYMENT_RESPONSE,
+          encodeHeaderPayload(priorSettlement),
+        );
+        request.paymcpPendingPayment = {
+          rail: "visa",
+          visaPayment,
+          accept,
+          clientIdem,
+          operationId,
+          amount: price.amount,
+          required,
+          priorSettlement,
+        };
+        return;
+      }
+      if (claim.kind === "in_flight") {
+        await reply.code(409).send({
+          error: "idempotency_in_flight",
+          detail:
+            "A request with this Idempotency-Key is already settling; retry after it completes (settled keys replay without re-charging).",
+        });
+        return;
+      }
+      let verification;
+      try {
+        verification = await visaSettler.verify({
+          payment: visaPayment,
+          idempotencyKey: clientIdem,
+          ...(request.paymcpTap !== undefined
+            ? {
+                tapKeyId: request.paymcpTap.keyid,
+                tapNonce: request.paymcpTap.nonce,
+              }
+            : {}),
+        });
+      } catch (err) {
+        await ledger.recordSettlement({
+          idempotencyKey: clientIdem,
+          operationId,
+          amount: price.amount,
+          network: visaPayment.network ?? "visa:vic",
+          payer: "",
+          transaction: "",
+          status: "failed",
+          errorReason: "visa_unavailable",
+        });
+        if (err instanceof VisaHttpError || err instanceof VisaTransportError) {
+          await reply.code(502).send({
+            error: "visa_unavailable",
+            detail: err.message,
+          });
+          return;
+        }
+        throw err;
+      }
+      if (!verification.isValid) {
+        const reason = verification.invalidReason ?? "payment_invalid";
+        await ledger.recordSettlement({
+          idempotencyKey: clientIdem,
+          operationId,
+          amount: price.amount,
+          network: visaPayment.network ?? "visa:vic",
+          payer: verification.payer ?? "",
+          transaction: "",
+          status: "failed",
+          errorReason: reason,
+        });
+        await reply.code(402).send({
+          error: "payment_failed",
+          rail: "visa",
+          reason,
+        });
+        return;
+      }
+      request.paymcpPendingPayment = {
+        rail: "visa",
+        visaPayment,
+        accept,
+        clientIdem,
+        operationId,
+        amount: price.amount,
+        required,
+      };
+      return;
+    }
+
     const signatureHeader = headerValue(request, HEADER_PAYMENT_SIGNATURE);
     if (signatureHeader === undefined) {
       await reply
@@ -261,12 +454,14 @@ async function paymcpPaywallImpl(
         transaction: claim.entry.transaction,
         network: claim.entry.network,
         payer: claim.entry.payer,
+        rail: "x402",
       };
       reply.header(
         HEADER_PAYMENT_RESPONSE,
         encodeHeaderPayload(priorSettlement),
       );
       request.paymcpPendingPayment = {
+        rail: "x402",
         paymentPayload,
         accept,
         clientIdem,
@@ -353,6 +548,7 @@ async function paymcpPaywallImpl(
     }
 
     request.paymcpPendingPayment = {
+      rail: "x402",
       paymentPayload,
       accept,
       clientIdem,
@@ -387,7 +583,10 @@ async function paymcpPaywallImpl(
         idempotencyKey: pending.clientIdem,
         operationId: pending.operationId,
         amount: pending.amount,
-        network: pending.accept.network,
+        network:
+          pending.rail === "visa"
+            ? (pending.visaPayment?.network ?? "visa:vic")
+            : pending.accept.network,
         payer: "",
         transaction: "",
         status: "failed",
@@ -398,35 +597,70 @@ async function paymcpPaywallImpl(
 
     let settlement: SettlementResponse;
     try {
-      settlement = await settler.settle({
-        paymentPayload: pending.paymentPayload,
-        paymentRequirements: pending.accept,
-      });
+      if (pending.rail === "visa") {
+        if (visaSettler === undefined || pending.visaPayment === undefined) {
+          reply.code(503);
+          return JSON.stringify({
+            error: "rail_unavailable",
+            detail: "Visa VIC settler missing at settle time",
+          });
+        }
+        settlement = await visaSettler.settle({
+          payment: pending.visaPayment,
+          idempotencyKey: pending.clientIdem,
+          ...(request.paymcpTap !== undefined
+            ? {
+                tapKeyId: request.paymcpTap.keyid,
+                tapNonce: request.paymcpTap.nonce,
+              }
+            : {}),
+        });
+      } else {
+        if (pending.paymentPayload === undefined) {
+          reply.code(500);
+          return JSON.stringify({ error: "missing_payment_payload" });
+        }
+        const rawSettle = await settler.settle({
+          paymentPayload: pending.paymentPayload,
+          paymentRequirements: pending.accept,
+        });
+        settlement = { ...rawSettle, rail: "x402" };
+      }
     } catch (err) {
       // Release pending claim so the same Idempotency-Key can be retried.
+      const unavailable =
+        pending.rail === "visa" ? "visa_unavailable" : "facilitator_unavailable";
       await ledger.recordSettlement({
         idempotencyKey: pending.clientIdem,
         operationId: pending.operationId,
         amount: pending.amount,
-        network: pending.accept.network,
+        network:
+          pending.rail === "visa"
+            ? (pending.visaPayment?.network ?? "visa:vic")
+            : pending.accept.network,
         payer: "",
         transaction: "",
         status: "failed",
-        errorReason: "facilitator_unavailable",
+        errorReason: unavailable,
       });
       if (
         err instanceof FacilitatorHttpError ||
-        err instanceof FacilitatorTransportError
+        err instanceof FacilitatorTransportError ||
+        err instanceof VisaHttpError ||
+        err instanceof VisaTransportError
       ) {
-        log.warn("facilitator_unavailable", {
+        log.warn(unavailable, {
           operationId: pending.operationId,
           detail: err.message,
-          status: err instanceof FacilitatorHttpError ? err.status : undefined,
+          status:
+            err instanceof FacilitatorHttpError || err instanceof VisaHttpError
+              ? err.status
+              : undefined,
         });
         reply.code(502);
         reply.removeHeader(HEADER_PAYMENT_RESPONSE);
         return JSON.stringify({
-          error: "facilitator_unavailable",
+          error: unavailable,
           detail: err.message,
         });
       }

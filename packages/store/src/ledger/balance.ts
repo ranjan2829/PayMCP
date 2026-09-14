@@ -26,6 +26,7 @@ interface SpendRow {
   idempotency_key: string;
   request_id: string | null;
   status: string;
+  rail: string | null;
   upstream_status: number | null;
   error_reason: string | null;
   created_at: string;
@@ -43,6 +44,8 @@ export interface BeginSpendInput {
   readonly amount: string;
   readonly idempotencyKey: string;
   readonly requestId?: string;
+  /** Settlement rail recorded on the spend (receipt story). Default x402. */
+  readonly rail?: "x402" | "visa";
 }
 
 export interface CompleteSpendInput {
@@ -50,6 +53,7 @@ export interface CompleteSpendInput {
   readonly status: "settled" | "failed";
   readonly upstreamStatus?: number;
   readonly errorReason?: string;
+  readonly rail?: "x402" | "visa";
 }
 
 /**
@@ -102,6 +106,7 @@ export class BuyerBalanceLedger {
       );
       CREATE INDEX IF NOT EXISTS idx_funding_buyer ON funding_events(buyer_id);
     `);
+    ensureColumn(this.db, "spend_log", "rail", "TEXT NOT NULL DEFAULT 'x402'");
   }
 
   getBalance(buyerId: string): Balance {
@@ -238,8 +243,8 @@ export class BuyerBalanceLedger {
           .prepare(
             `INSERT INTO spend_log (
               id, buyer_id, listing_id, amount, idempotency_key, request_id,
-              status, upstream_status, error_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
+              status, rail, upstream_status, error_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
           )
           .run(
             id,
@@ -248,6 +253,7 @@ export class BuyerBalanceLedger {
             input.amount,
             input.idempotencyKey,
             input.requestId ?? null,
+            input.rail ?? "x402",
             now,
             now,
           );
@@ -310,7 +316,8 @@ export class BuyerBalanceLedger {
 
       this.db
         .prepare(
-          `UPDATE spend_log SET status = ?, upstream_status = ?, error_reason = ?, updated_at = ?
+          `UPDATE spend_log SET status = ?, upstream_status = ?, error_reason = ?, updated_at = ?,
+            rail = COALESCE(?, rail)
            WHERE idempotency_key = ?`,
         )
         .run(
@@ -318,6 +325,7 @@ export class BuyerBalanceLedger {
           input.upstreamStatus ?? null,
           input.errorReason ?? null,
           now,
+          input.rail ?? null,
           input.idempotencyKey,
         );
 
@@ -489,6 +497,7 @@ export class BuyerBalanceLedger {
 }
 
 function mapSpendRow(row: SpendRow): SpendLogEntry {
+  const rail = row.rail === "visa" ? "visa" : "x402";
   return SpendLogEntrySchema.parse({
     id: row.id,
     buyerId: row.buyer_id,
@@ -497,11 +506,26 @@ function mapSpendRow(row: SpendRow): SpendLogEntry {
     idempotencyKey: row.idempotency_key,
     requestId: row.request_id,
     status: row.status,
+    rail,
     upstreamStatus: row.upstream_status,
     errorReason: row.error_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
+}
+
+function ensureColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  ddl: string,
+): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
 }
 
 function isUniqueConstraintError(err: unknown): boolean {

@@ -14,6 +14,8 @@ export const PublicReceiptSchema = z.object({
   }),
   buyer: z.string().min(1),
   settleStatus: z.enum(["pending", "settled", "failed", "replayed"]),
+  /** Which rail settled this spend (x402 USDC or Visa VIC). */
+  rail: z.enum(["x402", "visa"]).default("x402"),
   payoutStatus: z.enum(["pending", "paid", "failed", "none"]),
   payoutTx: z.string().nullable(),
   explorerUrl: z.string().url().nullable(),

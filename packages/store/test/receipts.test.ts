@@ -141,6 +141,7 @@ describe("ReceiptService + routes", () => {
     expect(receipt.buyer).toMatch(/…/);
     expect(receipt.amount).toBe("10000");
     expect(receipt.settleStatus).toBe("settled");
+    expect(receipt.rail).toBe("x402");
     expect(receipt.payoutStatus).toBe("paid");
     expect(receipt.explorerUrl).toContain("sepolia.basescan.org");
     expect(receipt.receiptUrl).toBe(

@@ -67,13 +67,28 @@ export function parseSettlementResponse(raw: unknown): SettlementResponse {
   }
   const payer = payerVal;
   const errorReason = raw["errorReason"];
+  const railRaw = raw["rail"];
+  let rail: "x402" | "visa" | undefined;
+  if (railRaw !== undefined) {
+    if (railRaw !== "x402" && railRaw !== "visa") {
+      throw new HeaderDecodeError("rail must be x402 or visa when present");
+    }
+    rail = railRaw;
+  }
+  const base = {
+    success,
+    transaction,
+    network,
+    payer,
+    ...(rail !== undefined ? { rail } : {}),
+  };
   if (errorReason === undefined) {
-    return { success, transaction, network, payer };
+    return base;
   }
   if (typeof errorReason !== "string") {
     throw new HeaderDecodeError("errorReason must be a string when present");
   }
-  return { success, transaction, network, payer, errorReason };
+  return { ...base, errorReason };
 }
 
 function parseResource(raw: unknown): PaymentResource {
