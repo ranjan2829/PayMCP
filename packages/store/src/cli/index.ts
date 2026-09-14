@@ -7,6 +7,13 @@ import {
 } from "../config/env.js";
 import { createStoreApp } from "../gateway/app.js";
 import { seedCatalog } from "../seed/catalog.js";
+import {
+  requireLiveListingEnv,
+  seedLiveListing,
+  LIVE_PUBLIC_LISTING_ID,
+} from "../seed/live-listing.js";
+import { ReceiptService } from "../receipts/service.js";
+import { SellerPayoutQueue } from "../payout/queue.js";
 import { openStoreDb } from "../db.js";
 import { ListingRegistry } from "../listings/registry.js";
 import { BuyerBalanceLedger } from "../ledger/balance.js";
@@ -19,18 +26,22 @@ function printHelp(): void {
 Usage:
   paymcp-store serve              Start Fastify store server
   paymcp-store seed               Seed demo catalog (requires STORE_SEED_PAY_TO)
+  paymcp-store seed-live          Seed ONE live Base listing (fail-closed env)
   paymcp-store fund-checkout <buyer> <fiatCents>   Stripe Checkout URL (requires Stripe env)
   paymcp-store catalog            List active catalog
   paymcp-store balance <buyer>    Print buyer balance
   paymcp-store invoke <listingId> <buyerId> [--body JSON] [--path PATH]
   paymcp-store spend-log [buyer]  Print spend log
+  paymcp-store receipt <spendId|tx>   Print public receipt JSON (+ URL)
+  paymcp-store receipts [limit]   List recent public settlements
   paymcp-store payouts-flush      Retry pending seller payouts
   paymcp-store buyer-flow <buyer> Catalog → invoke → spend-log (requires funded balance)
 
 Env (names only — set real values in the environment, never commit secrets):
   STORE_HOST STORE_PORT STORE_DB_PATH STORE_SEED_NETWORK STORE_SEED_PAY_TO
+  STORE_PUBLIC_BASE_URL PAYMCP_FACILITATOR_URL PAYMCP_ASSET PAYMCP_ASSET_NAME
   STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_SUCCESS_URL STRIPE_CANCEL_URL
-  STORE_OPERATOR_PRIVATE_KEY STORE_RPC_URL PAYMCP_ASSET PAYMCP_FACILITATOR_URL
+  STORE_OPERATOR_PRIVATE_KEY STORE_RPC_URL
 `);
 }
 
@@ -107,6 +118,79 @@ export async function runStoreCli(argv: string[]): Promise<void> {
           2,
         ),
       );
+      return;
+    }
+
+    if (cmd === "seed-live") {
+      const liveEnv: {
+        STORE_SEED_PAY_TO?: string;
+        STORE_SEED_NETWORK?: string;
+        PAYMCP_ASSET?: string;
+        PAYMCP_FACILITATOR_URL?: string;
+        STORE_LIVE_UPSTREAM_BASE_URL?: string;
+      } = {
+        STORE_SEED_NETWORK: env.STORE_SEED_NETWORK,
+      };
+      if (env.STORE_SEED_PAY_TO !== undefined) {
+        liveEnv.STORE_SEED_PAY_TO = env.STORE_SEED_PAY_TO;
+      }
+      if (env.PAYMCP_ASSET !== undefined) {
+        liveEnv.PAYMCP_ASSET = env.PAYMCP_ASSET;
+      }
+      if (env.PAYMCP_FACILITATOR_URL !== undefined) {
+        liveEnv.PAYMCP_FACILITATOR_URL = env.PAYMCP_FACILITATOR_URL;
+      }
+      const upstream = process.env["STORE_LIVE_UPSTREAM_BASE_URL"];
+      if (upstream !== undefined && upstream.length > 0) {
+        liveEnv.STORE_LIVE_UPSTREAM_BASE_URL = upstream;
+      }
+      const live = requireLiveListingEnv(liveEnv);
+      const result = seedLiveListing(listings, {
+        ...live,
+        force: argv.includes("--force"),
+      });
+      console.log(
+        JSON.stringify(
+          {
+            listingId: result.listing.id,
+            created: result.created,
+            name: result.listing.name,
+            price: result.listing.price,
+            payTo: result.listing.payTo,
+            network: result.network,
+            asset: result.asset,
+            facilitatorUrl: result.facilitatorUrl,
+            hint: `Invoke ${LIVE_PUBLIC_LISTING_ID} then GET /v1/receipts/:spendId`,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    if (cmd === "receipt" || cmd === "receipts") {
+      const payoutQueue = new SellerPayoutQueue(db);
+      const receipts = new ReceiptService({
+        listings,
+        ledger,
+        payouts: payoutQueue,
+        ...(env.STORE_PUBLIC_BASE_URL !== undefined
+          ? { publicBaseUrl: env.STORE_PUBLIC_BASE_URL }
+          : {}),
+        assetLabel: env.PAYMCP_ASSET_NAME ?? "USDC",
+      });
+      if (cmd === "receipts") {
+        const limit = argv[1] !== undefined ? Number(argv[1]) : 20;
+        console.log(JSON.stringify(receipts.listRecent({ limit }), null, 2));
+        return;
+      }
+      const id = argv[1];
+      if (id === undefined) {
+        throw new Error("usage: paymcp-store receipt <spendId|txHash>");
+      }
+      const receipt = receipts.getByIdOrTx(id);
+      console.log(JSON.stringify({ receipt }, null, 2));
       return;
     }
 
@@ -375,6 +459,10 @@ export async function runStoreCli(argv: string[]): Promise<void> {
           idempotencyKey: randomUUID(),
           body: { message: "buyer-flow hello" },
         });
+        const base =
+          env.STORE_PUBLIC_BASE_URL ??
+          `http://${env.STORE_HOST}:${env.STORE_PORT}`;
+        const receiptUrl = `${base.replace(/\/$/, "")}/v1/receipts/${result.spend.id}`;
         console.log(
           JSON.stringify(
             {
@@ -383,12 +471,14 @@ export async function runStoreCli(argv: string[]): Promise<void> {
               balanceAfter: result.balanceAfter,
               spend: result.spend,
               payout: result.payout,
+              receiptUrl,
               body: result.body,
             },
             null,
             2,
           ),
         );
+        console.log(`\nReceipt (HTML): ${receiptUrl}?format=html`);
 
         console.log("\n== 4) spend-log ==");
         console.log(
