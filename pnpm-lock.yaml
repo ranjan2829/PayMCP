@@ -133,6 +133,9 @@ importers:
       openapi-to-paymcp:
         specifier: workspace:*
         version: link:../paymcp
+      viem:
+        specifier: ^2.48.11
+        version: 2.56.3(typescript@5.9.3)(zod@3.25.76)
       zod:
         specifier: ^3.24.2
         version: 3.25.76

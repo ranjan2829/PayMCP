@@ -10,10 +10,12 @@ import {
 import {
   BuyerIdSchema,
   SpendLogQuerySchema,
-  TopUpInputSchema,
 } from "../ledger/schemas.js";
 import type { ListingRegistry } from "../listings/registry.js";
 import type { BuyerBalanceLedger } from "../ledger/balance.js";
+import type { StripeFundingClient } from "../funding/stripe.js";
+import { creditsForUsdCents } from "../funding/stripe.js";
+import type { SellerPayoutService } from "../payout/service.js";
 import { InvokeGateway } from "./invoke.js";
 import { AtomicAmountSchema } from "../listings/schemas.js";
 
@@ -21,6 +23,11 @@ export interface StoreAppDeps {
   readonly listings: ListingRegistry;
   readonly ledger: BuyerBalanceLedger;
   readonly invoke: InvokeGateway;
+  readonly stripe?: StripeFundingClient;
+  readonly payouts?: SellerPayoutService;
+  readonly publicBaseUrl?: string;
+  readonly stripeSuccessUrl?: string;
+  readonly stripeCancelUrl?: string;
 }
 
 const InvokeBodySchema = z.object({
@@ -32,7 +39,16 @@ const InvokeBodySchema = z.object({
   query: z.record(z.string()).optional(),
 });
 
-const TopUpBodySchema = TopUpInputSchema;
+const CheckoutBodySchema = z.object({
+  buyerId: BuyerIdSchema,
+  /** Fiat amount in cents (USD). Credits derived at USDC 6-decimal parity unless creditAmount set. */
+  fiatAmountCents: z.number().int().min(50).max(10_000_000),
+  creditAmount: AtomicAmountSchema.optional(),
+  currency: z.string().min(3).max(8).optional(),
+  successUrl: z.string().url().optional(),
+  cancelUrl: z.string().url().optional(),
+  customerEmail: z.string().email().optional(),
+});
 
 function sendError(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof ZodError) {
@@ -84,7 +100,6 @@ export async function registerStoreRoutes(
   app.get("/v1/catalog", async (req, reply) => {
     try {
       const query = CatalogQuerySchema.parse(req.query);
-      // Default catalog to active listings when status omitted.
       const effective =
         query.status === undefined ? { ...query, status: "active" as const } : query;
       const result = deps.listings.list(effective);
@@ -147,15 +162,100 @@ export async function registerStoreRoutes(
     },
   );
 
-  // ── Buyer balance ────────────────────────────────────────────────────────
-  app.post("/v1/top-up", async (req, reply) => {
+  // ── Buyer funding (Stripe Checkout — no faucet) ──────────────────────────
+  app.post("/v1/funding/checkout", async (req, reply) => {
     try {
-      const body = TopUpBodySchema.parse(req.body);
-      const balance = deps.ledger.topUp(body);
-      return reply.status(201).send({ balance, note: body.note ?? "dev faucet" });
+      if (deps.stripe === undefined) {
+        throw new StoreError(
+          "FUNDING_DISABLED",
+          "Stripe funding is not configured (set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET)",
+          503,
+        );
+      }
+      const body = CheckoutBodySchema.parse(req.body);
+      const creditAmount =
+        body.creditAmount ?? creditsForUsdCents(body.fiatAmountCents);
+      const successUrl =
+        body.successUrl ??
+        deps.stripeSuccessUrl ??
+        (deps.publicBaseUrl !== undefined
+          ? `${deps.publicBaseUrl}/v1/funding/success`
+          : undefined);
+      const cancelUrl =
+        body.cancelUrl ??
+        deps.stripeCancelUrl ??
+        (deps.publicBaseUrl !== undefined
+          ? `${deps.publicBaseUrl}/v1/funding/cancel`
+          : undefined);
+      if (successUrl === undefined || cancelUrl === undefined) {
+        throw new StoreError(
+          "VALIDATION",
+          "successUrl and cancelUrl are required (or set STRIPE_SUCCESS_URL / STRIPE_CANCEL_URL / STORE_PUBLIC_BASE_URL)",
+          400,
+        );
+      }
+      const session = await deps.stripe.createCheckoutSession({
+        buyerId: body.buyerId,
+        creditAmount,
+        fiatAmountCents: body.fiatAmountCents,
+        ...(body.currency !== undefined ? { currency: body.currency } : {}),
+        successUrl,
+        cancelUrl,
+        ...(body.customerEmail !== undefined
+          ? { customerEmail: body.customerEmail }
+          : {}),
+      });
+      return reply.status(201).send({
+        sessionId: session.id,
+        url: session.url,
+        buyerId: body.buyerId,
+        creditAmount,
+        fiatAmountCents: body.fiatAmountCents,
+      });
     } catch (err) {
       return sendError(reply, err);
     }
+  });
+
+  app.post("/v1/webhooks/stripe", async (req, reply) => {
+    try {
+      if (deps.stripe === undefined) {
+        throw new StoreError(
+          "FUNDING_DISABLED",
+          "Stripe funding is not configured",
+          503,
+        );
+      }
+      const raw =
+        (req as FastifyRequest & { rawBody?: string }).rawBody ??
+        JSON.stringify(req.body ?? {});
+      const sig = headerString(req, "stripe-signature");
+      const credited = deps.stripe.parseVerifiedWebhook(raw, sig);
+      if (credited === null) {
+        return { received: true, credited: false };
+      }
+      const balance = deps.ledger.creditFromFunding({
+        buyerId: credited.buyerId,
+        amount: credited.creditAmount,
+        fundingId: credited.fundingId,
+        source: "stripe",
+        note: "stripe checkout.session.completed",
+      });
+      return { received: true, credited: true, balance };
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  // Explicit rejection of legacy faucet route
+  app.post("/v1/top-up", async (_req, reply) => {
+    return reply.status(410).send({
+      error: {
+        code: "FUNDING_DISABLED",
+        message:
+          "Faucet top-up removed. Use POST /v1/funding/checkout + Stripe webhook, or a verified USDC deposit.",
+      },
+    });
   });
 
   app.get<{ Params: { buyerId: string } }>(
@@ -186,7 +286,27 @@ export async function registerStoreRoutes(
     }
   });
 
-  // ── Invoke (balance debit after 2xx) ─────────────────────────────────────
+  app.post("/v1/payouts/flush", async (_req, reply) => {
+    try {
+      if (deps.payouts === undefined) {
+        throw new StoreError(
+          "PAYOUT_FAILED",
+          "Seller payout executor is not configured",
+          503,
+        );
+      }
+      const result = await deps.payouts.flushPending();
+      return {
+        paid: result.paid.length,
+        failed: result.failed.length,
+        payouts: { paid: result.paid, failed: result.failed },
+      };
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  // ── Invoke (balance debit after 2xx + seller payout) ─────────────────────
   app.post<{ Params: { id: string } }>(
     "/v1/listings/:id/invoke",
     async (req, reply) => {
@@ -217,12 +337,13 @@ export async function registerStoreRoutes(
           ...(body.query !== undefined ? { query: body.query } : {}),
         });
 
-        return reply.status(result.replayed ? 200 : 200).send({
+        return reply.status(200).send({
           ok: true,
           replayed: result.replayed,
           spend: result.spend,
           upstreamStatus: result.upstreamStatus,
           balanceAfter: result.balanceAfter,
+          payout: result.payout,
           body: result.body,
         });
       } catch (err) {
@@ -230,9 +351,6 @@ export async function registerStoreRoutes(
       }
     },
   );
-
-  // Quiet unused import guard for AtomicAmountSchema in future route tweaks
-  void AtomicAmountSchema;
 }
 
 function headerString(

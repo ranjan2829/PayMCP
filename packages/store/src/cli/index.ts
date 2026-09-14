@@ -1,25 +1,36 @@
 import { randomUUID } from "node:crypto";
-import { loadStoreEnv } from "../config/env.js";
+import {
+  isStripeFundingEnabled,
+  isUsdcPayoutConfigured,
+  loadStoreEnv,
+  requireSeedPayTo,
+} from "../config/env.js";
 import { createStoreApp } from "../gateway/app.js";
 import { seedCatalog } from "../seed/catalog.js";
 import { openStoreDb } from "../db.js";
 import { ListingRegistry } from "../listings/registry.js";
 import { BuyerBalanceLedger } from "../ledger/balance.js";
+import { RecordingPayoutExecutor } from "../payout/index.js";
+import { StripeFundingClient, creditsForUsdCents } from "../funding/stripe.js";
 
 function printHelp(): void {
   console.log(`paymcp-store — PayMCP Store CLI
 
 Usage:
   paymcp-store serve              Start Fastify store server
-  paymcp-store seed               Seed demo catalog (echo, weather, grawwww)
-  paymcp-store top-up <buyer> <atomicAmount>
+  paymcp-store seed               Seed demo catalog (requires STORE_SEED_PAY_TO)
+  paymcp-store fund-checkout <buyer> <fiatCents>   Stripe Checkout URL (requires Stripe env)
   paymcp-store catalog            List active catalog
   paymcp-store balance <buyer>    Print buyer balance
   paymcp-store invoke <listingId> <buyerId> [--body JSON] [--path PATH]
   paymcp-store spend-log [buyer]  Print spend log
-  paymcp-store buyer-flow <buyer> Run top-up → catalog → invoke → spend-log
+  paymcp-store payouts-flush      Retry pending seller payouts
+  paymcp-store buyer-flow <buyer> Catalog → invoke → spend-log (requires funded balance)
 
-Env: STORE_HOST STORE_PORT STORE_DB_PATH STORE_SEED_NETWORK STORE_SEED_PAY_TO
+Env (names only — set real values in the environment, never commit secrets):
+  STORE_HOST STORE_PORT STORE_DB_PATH STORE_SEED_NETWORK STORE_SEED_PAY_TO
+  STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_SUCCESS_URL STRIPE_CANCEL_URL
+  STORE_OPERATOR_PRIVATE_KEY STORE_RPC_URL PAYMCP_ASSET PAYMCP_FACILITATOR_URL
 `);
 }
 
@@ -34,13 +45,13 @@ export async function runStoreCli(argv: string[]): Promise<void> {
 
   if (cmd === "serve") {
     const store = await createStoreApp({ env });
-    // Auto-seed empty DB
     const { total } = store.listings.list({ limit: 1, offset: 0 });
     if (total === 0) {
+      const payTo = requireSeedPayTo(env);
       const seeded = seedCatalog({
         listings: store.listings,
         network: env.STORE_SEED_NETWORK,
-        payTo: env.STORE_SEED_PAY_TO,
+        payTo,
       });
       store.app.log.info(
         { created: seeded.created },
@@ -52,19 +63,30 @@ export async function runStoreCli(argv: string[]): Promise<void> {
       port: env.STORE_PORT,
     });
     console.log(`PayMCP Store listening at ${address}`);
+    if (!isStripeFundingEnabled(env)) {
+      console.log(
+        "Stripe funding disabled — set STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET to enable POST /v1/funding/checkout",
+      );
+    }
+    if (!isUsdcPayoutConfigured(env)) {
+      console.log(
+        "Warning: USDC payout env incomplete — seller payouts on invoke require STORE_OPERATOR_PRIVATE_KEY, STORE_RPC_URL, PAYMCP_ASSET",
+      );
+    }
     return;
   }
 
-  const db = openStoreDb(env.STORE_DB_PATH);
+  let db: ReturnType<typeof openStoreDb> | undefined = openStoreDb(env.STORE_DB_PATH);
   const listings = new ListingRegistry(db);
   const ledger = new BuyerBalanceLedger(db);
 
   try {
     if (cmd === "seed") {
+      const payTo = requireSeedPayTo(env);
       const result = seedCatalog({
         listings,
         network: env.STORE_SEED_NETWORK,
-        payTo: env.STORE_SEED_PAY_TO,
+        payTo,
         force: argv.includes("--force"),
       });
       console.log(
@@ -76,6 +98,7 @@ export async function runStoreCli(argv: string[]): Promise<void> {
               id: l.id,
               name: l.name,
               price: l.price,
+              payTo: l.payTo,
               externalX402: l.externalX402,
               upstreamBaseUrl: l.upstreamBaseUrl,
             })),
@@ -88,13 +111,63 @@ export async function runStoreCli(argv: string[]): Promise<void> {
     }
 
     if (cmd === "top-up") {
+      throw new Error(
+        "Faucet top-up removed. Use: paymcp-store fund-checkout <buyerId> <fiatCents> " +
+          "(Stripe) — credits apply after verified webhook.",
+      );
+    }
+
+    if (cmd === "fund-checkout") {
       const buyerId = argv[1];
-      const amount = argv[2];
-      if (buyerId === undefined || amount === undefined) {
-        throw new Error("usage: paymcp-store top-up <buyerId> <atomicAmount>");
+      const centsRaw = argv[2];
+      if (buyerId === undefined || centsRaw === undefined) {
+        throw new Error(
+          "usage: paymcp-store fund-checkout <buyerId> <fiatAmountCents>",
+        );
       }
-      const balance = ledger.topUp({ buyerId, amount, note: "cli top-up" });
-      console.log(JSON.stringify({ balance }, null, 2));
+      if (!isStripeFundingEnabled(env)) {
+        throw new Error(
+          "STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET are required for fund-checkout",
+        );
+      }
+      const fiatAmountCents = Number(centsRaw);
+      if (!Number.isInteger(fiatAmountCents) || fiatAmountCents < 50) {
+        throw new Error("fiatAmountCents must be an integer >= 50");
+      }
+      const successUrl =
+        env.STRIPE_SUCCESS_URL ??
+        (env.STORE_PUBLIC_BASE_URL !== undefined
+          ? `${env.STORE_PUBLIC_BASE_URL}/v1/funding/success`
+          : undefined);
+      const cancelUrl =
+        env.STRIPE_CANCEL_URL ??
+        (env.STORE_PUBLIC_BASE_URL !== undefined
+          ? `${env.STORE_PUBLIC_BASE_URL}/v1/funding/cancel`
+          : undefined);
+      if (successUrl === undefined || cancelUrl === undefined) {
+        throw new Error(
+          "Set STRIPE_SUCCESS_URL and STRIPE_CANCEL_URL (or STORE_PUBLIC_BASE_URL)",
+        );
+      }
+      const creditAmount = creditsForUsdCents(fiatAmountCents);
+      const client = new StripeFundingClient({
+        secretKey: env.STRIPE_SECRET_KEY!,
+        webhookSecret: env.STRIPE_WEBHOOK_SECRET!,
+      });
+      const session = await client.createCheckoutSession({
+        buyerId,
+        creditAmount,
+        fiatAmountCents,
+        successUrl,
+        cancelUrl,
+      });
+      console.log(
+        JSON.stringify(
+          { sessionId: session.id, url: session.url, creditAmount, buyerId },
+          null,
+          2,
+        ),
+      );
       return;
     }
 
@@ -112,6 +185,7 @@ export async function runStoreCli(argv: string[]): Promise<void> {
               id: l.id,
               name: l.name,
               price: l.price,
+              payTo: l.payTo,
               network: l.network,
               externalX402: l.externalX402,
               defaultPath: l.defaultPath,
@@ -143,6 +217,21 @@ export async function runStoreCli(argv: string[]): Promise<void> {
       return;
     }
 
+    if (cmd === "payouts-flush") {
+      const store = await createStoreApp({
+        env,
+        dbPath: env.STORE_DB_PATH,
+        requirePayout: true,
+      });
+      try {
+        const result = await store.payouts.flushPending();
+        console.log(JSON.stringify(result, null, 2));
+      } finally {
+        await store.close();
+      }
+      return;
+    }
+
     if (cmd === "invoke") {
       const listingId = argv[1];
       const buyerId = argv[2];
@@ -162,7 +251,6 @@ export async function runStoreCli(argv: string[]): Promise<void> {
         path = argv[pathIdx + 1];
       }
 
-      // Use HTTP against running server when STORE_PUBLIC_BASE_URL set; else in-process.
       const base =
         env.STORE_PUBLIC_BASE_URL ??
         `http://${env.STORE_HOST}:${env.STORE_PORT}`;
@@ -189,15 +277,15 @@ export async function runStoreCli(argv: string[]): Promise<void> {
 
     if (cmd === "buyer-flow") {
       const buyerId = argv[1] ?? "buyer_demo";
-      const topUpAmount = argv[2] ?? "1000000"; // 1 USDC worth of credits
-
-      console.log("== 1) top-up ==");
-      const balance = ledger.topUp({
-        buyerId,
-        amount: topUpAmount,
-        note: "buyer-flow faucet",
-      });
+      console.log("== 1) balance (must be funded via Stripe checkout + webhook) ==");
+      const balance = ledger.getBalance(buyerId);
       console.log(JSON.stringify(balance, null, 2));
+      if (BigInt(balance.balance) <= 0n) {
+        throw new Error(
+          `buyer ${buyerId} has zero balance. Fund via: paymcp-store fund-checkout ${buyerId} <fiatCents> ` +
+            "then complete Stripe Checkout (webhook credits the ledger). No faucet.",
+        );
+      }
 
       console.log("\n== 2) catalog ==");
       let { listings: rows } = listings.list({
@@ -206,10 +294,11 @@ export async function runStoreCli(argv: string[]): Promise<void> {
         offset: 0,
       });
       if (rows.length === 0) {
+        const payTo = requireSeedPayTo(env);
         seedCatalog({
           listings,
           network: env.STORE_SEED_NETWORK,
-          payTo: env.STORE_SEED_PAY_TO,
+          payTo,
         });
         rows = listings.list({ status: "active", limit: 50, offset: 0 }).listings;
       }
@@ -219,6 +308,7 @@ export async function runStoreCli(argv: string[]): Promise<void> {
             id: l.id,
             name: l.name,
             price: l.price,
+            payTo: l.payTo,
             externalX402: l.externalX402,
           })),
           null,
@@ -233,9 +323,6 @@ export async function runStoreCli(argv: string[]): Promise<void> {
         console.log(
           "\nNo non-external listing to invoke in-process. Seeded catalog listed above.",
         );
-        console.log(
-          "Start the store (`paymcp-store serve`) and a mock upstream, then: paymcp-store invoke …",
-        );
         console.log("\n== spend-log ==");
         console.log(
           JSON.stringify(ledger.listSpendLog({ buyerId, limit: 20, offset: 0 }), null, 2),
@@ -243,9 +330,9 @@ export async function runStoreCli(argv: string[]): Promise<void> {
         return;
       }
 
-      // In-process invoke with mock fetch if upstream is local and unreachable —
-      // prefer HTTP when server is up; otherwise use InvokeGateway with mock.
-      const { InvokeGateway } = await import("../gateway/invoke.js");
+      db.close();
+      db = undefined;
+
       const mockFetch: typeof fetch = async (input, init) => {
         const url = String(input);
         if (url.includes("/echo") || url.includes("127.0.0.1:8787")) {
@@ -264,43 +351,62 @@ export async function runStoreCli(argv: string[]): Promise<void> {
         });
       };
 
-      const gateway = new InvokeGateway({
-        listings,
-        ledger,
+      // Local buyer-flow uses recording payout (not live chain) unless operator env set.
+      const payoutExecutor = isUsdcPayoutConfigured(env)
+        ? undefined
+        : new RecordingPayoutExecutor({
+            transaction: "0xbuyer_flow_local_payout",
+            network: env.STORE_SEED_NETWORK,
+            payer: "local-buyer-flow",
+          });
+      const store = await createStoreApp({
+        env,
+        dbPath: env.STORE_DB_PATH,
         fetchImpl: mockFetch,
+        ...(payoutExecutor !== undefined ? { payoutExecutor } : {}),
+        requirePayout: true,
       });
 
-      console.log(`\n== 3) invoke ${target.id} ==`);
-      const result = await gateway.invoke({
-        listingId: target.id,
-        buyerId,
-        idempotencyKey: randomUUID(),
-        body: { message: "buyer-flow hello" },
-      });
-      console.log(
-        JSON.stringify(
-          {
-            replayed: result.replayed,
-            upstreamStatus: result.upstreamStatus,
-            balanceAfter: result.balanceAfter,
-            spend: result.spend,
-            body: result.body,
-          },
-          null,
-          2,
-        ),
-      );
+      try {
+        console.log(`\n== 3) invoke ${target.id} ==`);
+        const result = await store.invoke.invoke({
+          listingId: target.id,
+          buyerId,
+          idempotencyKey: randomUUID(),
+          body: { message: "buyer-flow hello" },
+        });
+        console.log(
+          JSON.stringify(
+            {
+              replayed: result.replayed,
+              upstreamStatus: result.upstreamStatus,
+              balanceAfter: result.balanceAfter,
+              spend: result.spend,
+              payout: result.payout,
+              body: result.body,
+            },
+            null,
+            2,
+          ),
+        );
 
-      console.log("\n== 4) spend-log ==");
-      console.log(
-        JSON.stringify(ledger.listSpendLog({ buyerId, limit: 20, offset: 0 }), null, 2),
-      );
+        console.log("\n== 4) spend-log ==");
+        console.log(
+          JSON.stringify(
+            store.ledger.listSpendLog({ buyerId, limit: 20, offset: 0 }),
+            null,
+            2,
+          ),
+        );
+      } finally {
+        await store.close();
+      }
       return;
     }
 
     printHelp();
     throw new Error(`unknown command: ${cmd}`);
   } finally {
-    db.close();
+    db?.close();
   }
 }

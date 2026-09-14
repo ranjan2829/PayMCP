@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { StoreError } from "../errors/index.js";
 import {
   BalanceSchema,
+  CreditFundingInputSchema,
   SpendLogEntrySchema,
   SpendLogQuerySchema,
-  TopUpInputSchema,
   type Balance,
+  type CreditFundingInput,
   type SpendLogEntry,
   type SpendLogQuery,
-  type TopUpInput,
 } from "./schemas.js";
 
 interface BalanceRow {
@@ -53,9 +53,11 @@ export interface CompleteSpendInput {
 }
 
 /**
- * Buyer credit ledger: top-up, atomic debit-after-success, spend log.
+ * Buyer credit ledger: verified funding credit, atomic debit-after-success, spend log.
  *
- * Happy path agents spend from balance — no EVM_PRIVATE_KEY required.
+ * Credits land only via creditFromFunding (Stripe webhook / USDC deposit /
+ * test fixtures). There is no product faucet.
+ * Happy path agents spend from balance — no EVM_PRIVATE_KEY on the buyer.
  * Debit is reserved (pending) before upstream invoke and finalized only
  * after 2xx (mirror settle-on-200). Failed upstream releases the hold.
  */
@@ -90,6 +92,15 @@ export class BuyerBalanceLedger {
       CREATE INDEX IF NOT EXISTS idx_spend_buyer ON spend_log(buyer_id);
       CREATE INDEX IF NOT EXISTS idx_spend_listing ON spend_log(listing_id);
       CREATE INDEX IF NOT EXISTS idx_spend_status ON spend_log(status);
+      CREATE TABLE IF NOT EXISTS funding_events (
+        funding_id TEXT PRIMARY KEY,
+        buyer_id TEXT NOT NULL,
+        amount TEXT NOT NULL,
+        source TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_funding_buyer ON funding_events(buyer_id);
     `);
   }
 
@@ -113,13 +124,37 @@ export class BuyerBalanceLedger {
     });
   }
 
-  /** Dev / MVP top-up faucet. Credits buyer balance atomically. */
-  topUp(input: TopUpInput): Balance {
-    const parsed = TopUpInputSchema.parse(input);
+  /**
+   * Credit buyer from a verified funding source (Stripe / USDC deposit).
+   * Idempotent on fundingId — replays return the current balance without double-credit.
+   */
+  creditFromFunding(input: CreditFundingInput): Balance {
+    const parsed = CreditFundingInputSchema.parse(input);
     const now = new Date().toISOString();
     const amount = BigInt(parsed.amount);
 
     const tx = this.db.transaction(() => {
+      const existing = this.db
+        .prepare(`SELECT funding_id FROM funding_events WHERE funding_id = ?`)
+        .get(parsed.fundingId) as { funding_id: string } | undefined;
+      if (existing !== undefined) {
+        return;
+      }
+
+      this.db
+        .prepare(
+          `INSERT INTO funding_events (funding_id, buyer_id, amount, source, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          parsed.fundingId,
+          parsed.buyerId,
+          parsed.amount,
+          parsed.source,
+          parsed.note ?? null,
+          now,
+        );
+
       const row = this.db
         .prepare(
           `SELECT buyer_id, balance, updated_at FROM buyer_balances WHERE buyer_id = ?`,

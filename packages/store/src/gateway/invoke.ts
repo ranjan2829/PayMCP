@@ -8,6 +8,8 @@ import type { ListingRegistry } from "../listings/registry.js";
 import type { Listing } from "../listings/schemas.js";
 import type { BuyerBalanceLedger } from "../ledger/balance.js";
 import type { SpendLogEntry } from "../ledger/schemas.js";
+import type { SellerPayoutService } from "../payout/service.js";
+import type { SellerPayout } from "../payout/queue.js";
 
 export interface InvokeRequest {
   readonly listingId: string;
@@ -30,11 +32,13 @@ export interface InvokeSuccess {
   readonly upstreamHeaders: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly balanceAfter: string;
+  readonly payout: SellerPayout | null;
 }
 
 export interface InvokeGatewayOptions {
   readonly listings: ListingRegistry;
   readonly ledger: BuyerBalanceLedger;
+  readonly payouts?: SellerPayoutService;
   readonly webhook?: WebhookSender;
   readonly fetchImpl?: typeof fetch;
   /** Asset label for webhook payload (default USDC credits). */
@@ -45,14 +49,16 @@ export interface InvokeGatewayOptions {
  * Invoke a listing via store balance:
  * 1. beginSpend (hold + idempotency)
  * 2. proxy upstream
- * 3. on 2xx → completeSpend(settled) + optional webhook
+ * 3. on 2xx → completeSpend(settled) + seller payout to listing.payTo + optional webhook
  * 4. on non-2xx → completeSpend(failed) refund hold
  *
  * Mirrors paymcp settle-on-200 semantics for the credit-balance path.
+ * Seller payout is required for a complete settle (not credit-only).
  */
 export class InvokeGateway {
   private readonly listings: ListingRegistry;
   private readonly ledger: BuyerBalanceLedger;
+  private readonly payouts: SellerPayoutService | undefined;
   private readonly webhook: WebhookSender | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly asset: string;
@@ -60,6 +66,7 @@ export class InvokeGateway {
   constructor(options: InvokeGatewayOptions) {
     this.listings = options.listings;
     this.ledger = options.ledger;
+    this.payouts = options.payouts;
     this.webhook = options.webhook;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.asset = options.asset ?? "USDC";
@@ -86,6 +93,8 @@ export class InvokeGateway {
 
     if (begin.kind === "already_settled") {
       const balance = this.ledger.getBalance(req.buyerId);
+      const existingPayout =
+        this.payouts?.queueRef.findBySpendId(begin.entry.id) ?? null;
       return {
         ok: true,
         replayed: true,
@@ -97,6 +106,7 @@ export class InvokeGateway {
           message: "idempotency key already settled; upstream not re-called",
         },
         balanceAfter: balance.balance,
+        payout: existingPayout,
       };
     }
 
@@ -167,6 +177,11 @@ export class InvokeGateway {
         upstreamStatus,
       });
 
+      let payout: SellerPayout | null = null;
+      if (this.payouts !== undefined) {
+        payout = await this.payouts.settleForSpend({ listing, spend });
+      }
+
       void this.maybeNotifyWebhook(listing, spend, req);
 
       const balance = this.ledger.getBalance(req.buyerId);
@@ -178,6 +193,7 @@ export class InvokeGateway {
         upstreamHeaders,
         body: upstreamBody,
         balanceAfter: balance.balance,
+        payout,
       };
     } catch (err) {
       if (err instanceof StoreError) {

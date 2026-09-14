@@ -37,7 +37,7 @@ describe("ListingRegistry", () => {
       },
       price: "10000",
       sellerId: "seller_1",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
       network: "eip155:84532",
       upstreamBaseUrl: "http://127.0.0.1:8787",
       defaultPath: "/echo",
@@ -58,7 +58,7 @@ describe("ListingRegistry", () => {
       openapi: { openapi: "3.0.3", info: { title: "t", version: "1" }, paths: {} },
       price: "1",
       sellerId: "s",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
       network: "eip155:84532",
     });
     reg.create({
@@ -67,7 +67,7 @@ describe("ListingRegistry", () => {
       openapi: { openapi: "3.0.3", info: { title: "t", version: "1" }, paths: {} },
       price: "2",
       sellerId: "s",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
       network: "eip155:84532",
       status: "paused",
     });

@@ -10,16 +10,23 @@ export const BuyerIdSchema = z
     "buyer id must be alphanumeric with . _ : -",
   );
 
-export const TopUpInputSchema = z.object({
+/** Verified funding credit (Stripe webhook / USDC deposit) — not a faucet. */
+export const CreditFundingInputSchema = z.object({
   buyerId: BuyerIdSchema,
   amount: AtomicAmountSchema.refine((v) => BigInt(v) > 0n, {
-    message: "top-up amount must be > 0",
+    message: "funding amount must be > 0",
   }),
-  /** Optional note for audit (dev faucet, stripe, etc.). */
+  /** Stable idempotency key (e.g. Stripe session/payment intent id). */
+  fundingId: z.string().min(1).max(256),
+  source: z.enum(["stripe", "usdc_deposit", "test_fixture"]),
   note: z.string().max(512).optional(),
 });
 
-export type TopUpInput = z.input<typeof TopUpInputSchema>;
+export type CreditFundingInput = z.input<typeof CreditFundingInputSchema>;
+
+/** @deprecated Use CreditFundingInputSchema — kept as alias for internal renames. */
+export const TopUpInputSchema = CreditFundingInputSchema;
+export type TopUpInput = CreditFundingInput;
 
 export const BalanceSchema = z.object({
   buyerId: z.string(),
@@ -41,6 +48,8 @@ export const SpendLogEntrySchema = z.object({
   errorReason: z.string().nullable(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
+  payoutId: z.string().nullable().optional(),
+  payoutTx: z.string().nullable().optional(),
 });
 
 export type SpendLogEntry = z.infer<typeof SpendLogEntrySchema>;

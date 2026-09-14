@@ -1,9 +1,11 @@
 export {
   BuyerIdSchema,
+  CreditFundingInputSchema,
   TopUpInputSchema,
   BalanceSchema,
   SpendLogEntrySchema,
   SpendLogQuerySchema,
+  type CreditFundingInput,
   type TopUpInput,
   type Balance,
   type SpendLogEntry,
