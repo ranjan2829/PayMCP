@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Store: remove faucet top-up; Stripe Checkout + webhook funding; seller USDC payout on invoke settle; require `STORE_SEED_PAY_TO`; scrub placeholder secrets from docs/env examples.
+
+
 ## 0.2.0
 
 - Settle only after successful 2xx responses

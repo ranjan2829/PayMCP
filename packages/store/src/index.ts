@@ -5,7 +5,13 @@ export const STORE_PACKAGE_VERSION = "0.1.0" as const;
 
 export { StoreError, isStoreError, type StoreErrorCode } from "./errors/index.js";
 export { openStoreDb } from "./db.js";
-export { loadStoreEnv, type StoreEnvConfig } from "./config/env.js";
+export {
+  loadStoreEnv,
+  requireSeedPayTo,
+  isStripeFundingEnabled,
+  isUsdcPayoutConfigured,
+  type StoreEnvConfig,
+} from "./config/env.js";
 export {
   AtomicAmountSchema,
   ListingStatusSchema,
@@ -26,11 +32,13 @@ export {
 } from "./listings/index.js";
 export {
   BuyerIdSchema,
+  CreditFundingInputSchema,
   TopUpInputSchema,
   BalanceSchema,
   SpendLogEntrySchema,
   SpendLogQuerySchema,
   BuyerBalanceLedger,
+  type CreditFundingInput,
   type TopUpInput,
   type Balance,
   type SpendLogEntry,
@@ -64,4 +72,22 @@ export {
   type SeedCatalogOptions,
   type SeedCatalogResult,
 } from "./seed/index.js";
+export {
+  StripeFundingClient,
+  verifyStripeSignature,
+  creditsForUsdCents,
+  type StripeCheckoutInput,
+  type StripeCheckoutSession,
+  type StripeClientOptions,
+} from "./funding/index.js";
+export {
+  SellerPayoutQueue,
+  SellerPayoutService,
+  FacilitatorSellerPayout,
+  UsdcTransferPayout,
+  RecordingPayoutExecutor,
+  type SellerPayout,
+  type SellerPayoutExecutor,
+  type PayoutExecutionResult,
+} from "./payout/index.js";
 export { runStoreCli } from "./cli/index.js";

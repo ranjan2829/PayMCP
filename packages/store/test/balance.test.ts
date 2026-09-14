@@ -4,13 +4,13 @@ import { BuyerBalanceLedger } from "../src/ledger/balance.js";
 import { StoreError } from "../src/errors/index.js";
 
 describe("BuyerBalanceLedger", () => {
-  it("tops up and reports balance", () => {
+  it("credits from funding and reports balance", () => {
     const db = openStoreDb(":memory:");
     const ledger = new BuyerBalanceLedger(db);
     expect(ledger.getBalance("buyer_a").balance).toBe("0");
-    const bal = ledger.topUp({ buyerId: "buyer_a", amount: "50000" });
+    const bal = ledger.creditFromFunding({ buyerId: "buyer_a", amount: "50000" , fundingId: "fund_test_0", source: "test_fixture" });
     expect(bal.balance).toBe("50000");
-    ledger.topUp({ buyerId: "buyer_a", amount: "10000" });
+    ledger.creditFromFunding({ buyerId: "buyer_a", amount: "10000" , fundingId: "fund_test_1", source: "test_fixture" });
     expect(ledger.getBalance("buyer_a").balance).toBe("60000");
     db.close();
   });
@@ -18,7 +18,7 @@ describe("BuyerBalanceLedger", () => {
   it("holds on beginSpend and settles debit", () => {
     const db = openStoreDb(":memory:");
     const ledger = new BuyerBalanceLedger(db);
-    ledger.topUp({ buyerId: "b1", amount: "100000" });
+    ledger.creditFromFunding({ buyerId: "b1", amount: "100000" , fundingId: "fund_test_2", source: "test_fixture" });
     const begin = ledger.beginSpend({
       buyerId: "b1",
       listingId: "lst_x",
@@ -45,7 +45,7 @@ describe("BuyerBalanceLedger", () => {
   it("refunds hold when completeSpend fails", () => {
     const db = openStoreDb(":memory:");
     const ledger = new BuyerBalanceLedger(db);
-    ledger.topUp({ buyerId: "b1", amount: "10000" });
+    ledger.creditFromFunding({ buyerId: "b1", amount: "10000" , fundingId: "fund_test_3", source: "test_fixture" });
     ledger.beginSpend({
       buyerId: "b1",
       listingId: "lst_x",
@@ -66,7 +66,7 @@ describe("BuyerBalanceLedger", () => {
   it("rejects insufficient balance with 402", () => {
     const db = openStoreDb(":memory:");
     const ledger = new BuyerBalanceLedger(db);
-    ledger.topUp({ buyerId: "b1", amount: "100" });
+    ledger.creditFromFunding({ buyerId: "b1", amount: "100" , fundingId: "fund_test_4", source: "test_fixture" });
     expect(() =>
       ledger.beginSpend({
         buyerId: "b1",
@@ -93,7 +93,7 @@ describe("BuyerBalanceLedger", () => {
   it("replays already_settled idempotency keys", () => {
     const db = openStoreDb(":memory:");
     const ledger = new BuyerBalanceLedger(db);
-    ledger.topUp({ buyerId: "b1", amount: "50000" });
+    ledger.creditFromFunding({ buyerId: "b1", amount: "50000" , fundingId: "fund_test_5", source: "test_fixture" });
     ledger.beginSpend({
       buyerId: "b1",
       listingId: "lst_x",
@@ -119,7 +119,7 @@ describe("BuyerBalanceLedger", () => {
   it("fail-closes in_flight pending keys", () => {
     const db = openStoreDb(":memory:");
     const ledger = new BuyerBalanceLedger(db);
-    ledger.topUp({ buyerId: "b1", amount: "50000" });
+    ledger.creditFromFunding({ buyerId: "b1", amount: "50000" , fundingId: "fund_test_6", source: "test_fixture" });
     ledger.beginSpend({
       buyerId: "b1",
       listingId: "lst_x",
@@ -135,4 +135,24 @@ describe("BuyerBalanceLedger", () => {
     expect(second.kind).toBe("in_flight");
     db.close();
   });
+
+  it("is idempotent on fundingId", () => {
+    const db = openStoreDb(":memory:");
+    const ledger = new BuyerBalanceLedger(db);
+    ledger.creditFromFunding({
+      buyerId: "buyer_a",
+      amount: "50000",
+      fundingId: "stripe:sess_same",
+      source: "stripe",
+    });
+    ledger.creditFromFunding({
+      buyerId: "buyer_a",
+      amount: "50000",
+      fundingId: "stripe:sess_same",
+      source: "stripe",
+    });
+    expect(ledger.getBalance("buyer_a").balance).toBe("50000");
+    db.close();
+  });
+
 });

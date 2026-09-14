@@ -9,6 +9,8 @@ export type StoreErrorCode =
   | "IDEMPOTENCY_IN_FLIGHT"
   | "IDEMPOTENCY_REPLAY"
   | "UPSTREAM_FAILED"
+  | "FUNDING_DISABLED"
+  | "PAYOUT_FAILED"
   | "VALIDATION"
   | "INTERNAL";
 

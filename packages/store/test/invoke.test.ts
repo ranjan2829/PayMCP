@@ -14,11 +14,23 @@ import { SellerKit } from "../src/seller/kit.js";
 import { readFileSync } from "node:fs";
 import YAML from "js-yaml";
 import { fixturesDir } from "../src/seed/catalog.js";
+import {
+  RecordingPayoutExecutor,
+  SellerPayoutQueue,
+  SellerPayoutService,
+} from "../src/payout/index.js";
+import { randomUUID } from "node:crypto";
 
 function setup() {
   const db = openStoreDb(":memory:");
   const listings = new ListingRegistry(db);
   const ledger = new BuyerBalanceLedger(db);
+  const payoutExecutor = new RecordingPayoutExecutor();
+  const payouts = new SellerPayoutService({
+    queue: new SellerPayoutQueue(db),
+    executor: payoutExecutor,
+    defaultAsset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  });
   const listing = listings.create({
     id: "lst_echo",
     name: "Echo",
@@ -36,19 +48,19 @@ function setup() {
     },
     price: "10000",
     sellerId: "seller",
-    payTo: "0x0000000000000000000000000000000000000001",
+    payTo: "0x1111111111111111111111111111111111111111",
     network: "eip155:84532",
     upstreamBaseUrl: "http://upstream.test",
     defaultPath: "/echo",
     defaultMethod: "POST",
   });
-  return { db, listings, ledger, listing };
+  return { db, listings, ledger, listing, payouts, payoutExecutor };
 }
 
 describe("InvokeGateway", () => {
   it("debits only after upstream 2xx", async () => {
-    const { db, listings, ledger, listing } = setup();
-    ledger.topUp({ buyerId: "buyer", amount: "50000" });
+    const { db, listings, ledger, listing, payouts, payoutExecutor } = setup();
+    ledger.creditFromFunding({ buyerId: "buyer", amount: "50000" , fundingId: "fund_inv_0", source: "test_fixture" });
     const fetchImpl = vi.fn(async () => {
       expect(ledger.getBalance("buyer").balance).toBe("40000"); // held
       return new Response(JSON.stringify({ ok: true }), {
@@ -56,7 +68,7 @@ describe("InvokeGateway", () => {
         headers: { "content-type": "application/json" },
       });
     });
-    const gateway = new InvokeGateway({ listings, ledger, fetchImpl });
+    const gateway = new InvokeGateway({ listings, ledger, payouts, fetchImpl });
     const result = await gateway.invoke({
       listingId: listing.id,
       buyerId: "buyer",
@@ -67,16 +79,20 @@ describe("InvokeGateway", () => {
     expect(result.replayed).toBe(false);
     expect(result.balanceAfter).toBe("40000");
     expect(result.spend.status).toBe("settled");
+    expect(result.payout?.status).toBe("paid");
+    expect(payoutExecutor.calls).toHaveLength(1);
+    expect(payoutExecutor.calls[0]?.payTo).toBe(listing.payTo);
     expect(fetchImpl).toHaveBeenCalledOnce();
     db.close();
   });
 
   it("refunds on upstream non-2xx", async () => {
-    const { db, listings, ledger, listing } = setup();
-    ledger.topUp({ buyerId: "buyer", amount: "50000" });
+    const { db, listings, ledger, listing, payouts, payoutExecutor } = setup();
+    ledger.creditFromFunding({ buyerId: "buyer", amount: "50000" , fundingId: "fund_inv_1", source: "test_fixture" });
     const gateway = new InvokeGateway({
       listings,
       ledger,
+      payouts,
       fetchImpl: async () =>
         new Response(JSON.stringify({ error: "nope" }), {
           status: 503,
@@ -98,8 +114,8 @@ describe("InvokeGateway", () => {
   });
 
   it("replays settled idempotency without re-calling upstream", async () => {
-    const { db, listings, ledger, listing } = setup();
-    ledger.topUp({ buyerId: "buyer", amount: "50000" });
+    const { db, listings, ledger, listing, payouts, payoutExecutor } = setup();
+    ledger.creditFromFunding({ buyerId: "buyer", amount: "50000" , fundingId: "fund_inv_2", source: "test_fixture" });
     const fetchImpl = vi.fn(
       async () =>
         new Response(JSON.stringify({ ok: true }), {
@@ -107,7 +123,7 @@ describe("InvokeGateway", () => {
           headers: { "content-type": "application/json" },
         }),
     );
-    const gateway = new InvokeGateway({ listings, ledger, fetchImpl });
+    const gateway = new InvokeGateway({ listings, ledger, payouts, fetchImpl });
     await gateway.invoke({
       listingId: listing.id,
       buyerId: "buyer",
@@ -127,8 +143,8 @@ describe("InvokeGateway", () => {
   });
 
   it("fail-closes in-flight idempotency", async () => {
-    const { db, listings, ledger, listing } = setup();
-    ledger.topUp({ buyerId: "buyer", amount: "50000" });
+    const { db, listings, ledger, listing, payouts, payoutExecutor } = setup();
+    ledger.creditFromFunding({ buyerId: "buyer", amount: "50000" , fundingId: "fund_inv_3", source: "test_fixture" });
     let release!: () => void;
     const gate = new Promise<void>((r) => {
       release = r;
@@ -140,7 +156,7 @@ describe("InvokeGateway", () => {
         headers: { "content-type": "application/json" },
       });
     });
-    const gateway = new InvokeGateway({ listings, ledger, fetchImpl });
+    const gateway = new InvokeGateway({ listings, ledger, payouts, fetchImpl });
     const first = gateway.invoke({
       listingId: listing.id,
       buyerId: "buyer",
@@ -166,7 +182,7 @@ describe("InvokeGateway", () => {
 });
 
 describe("HTTP routes + idempotency", () => {
-  it("top-up, catalog, invoke via Fastify inject", async () => {
+  it("funding credit, catalog, invoke via Fastify inject", async () => {
     const dir = mkdtempSync(join(tmpdir(), "paymcp-store-http-"));
     const dbPath = join(dir, "store.db");
     const fetchImpl = vi.fn(
@@ -180,10 +196,18 @@ describe("HTTP routes + idempotency", () => {
       STORE_DB_PATH: dbPath,
       STORE_HOST: "127.0.0.1",
       STORE_PORT: "8799",
-      STORE_SEED_PAY_TO: "0x0000000000000000000000000000000000000001",
+      STORE_SEED_PAY_TO: "0x1111111111111111111111111111111111111111",
       STORE_SEED_NETWORK: "eip155:84532",
+      STORE_REQUIRE_PAYOUT: "1",
+      PAYMCP_ASSET: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     });
-    const store = await createStoreApp({ env, dbPath, fetchImpl });
+    const payoutExecutor = new RecordingPayoutExecutor();
+    const store = await createStoreApp({
+      env,
+      dbPath,
+      fetchImpl,
+      payoutExecutor,
+    });
     store.listings.create({
       id: "lst_http",
       name: "HTTP Echo",
@@ -194,7 +218,7 @@ describe("HTTP routes + idempotency", () => {
       },
       price: "10000",
       sellerId: "s",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
       network: "eip155:84532",
       upstreamBaseUrl: "http://upstream.test",
       defaultPath: "/echo",
@@ -202,12 +226,19 @@ describe("HTTP routes + idempotency", () => {
       status: "active",
     });
 
-    const top = await store.app.inject({
+    store.ledger.creditFromFunding({
+      buyerId: "buyer_http",
+      amount: "100000",
+      fundingId: "stripe:sess_http_test",
+      source: "test_fixture",
+    });
+
+    const gone = await store.app.inject({
       method: "POST",
       url: "/v1/top-up",
       payload: { buyerId: "buyer_http", amount: "100000" },
     });
-    expect(top.statusCode).toBe(201);
+    expect(gone.statusCode).toBe(410);
 
     const catalog = await store.app.inject({ method: "GET", url: "/v1/catalog" });
     expect(catalog.statusCode).toBe(200);
@@ -264,7 +295,7 @@ describe("SellerKit + seed", () => {
       openapi: raw,
       name: "Echo Tool",
       sellerId: "seller_demo",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
       network: "eip155:84532",
       upstreamBaseUrl: "http://127.0.0.1:8787",
     });
@@ -280,7 +311,7 @@ describe("SellerKit + seed", () => {
     const result = seedCatalog({
       listings,
       network: "eip155:84532",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
     });
     expect(result.created).toHaveLength(3);
     const graw = listings.getOrThrow("lst_grawwww_render");
@@ -291,7 +322,7 @@ describe("SellerKit + seed", () => {
     const again = seedCatalog({
       listings,
       network: "eip155:84532",
-      payTo: "0x0000000000000000000000000000000000000001",
+      payTo: "0x1111111111111111111111111111111111111111",
     });
     expect(again.skipped).toHaveLength(3);
     db.close();
