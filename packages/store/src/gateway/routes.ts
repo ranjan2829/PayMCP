@@ -16,6 +16,9 @@ import type { BuyerBalanceLedger } from "../ledger/balance.js";
 import type { StripeFundingClient } from "../funding/stripe.js";
 import { creditsForUsdCents } from "../funding/stripe.js";
 import type { SellerPayoutService } from "../payout/service.js";
+import type { ReceiptService } from "../receipts/service.js";
+import { renderReceiptHtml } from "../receipts/html.js";
+import { PublicReceiptListQuerySchema } from "../receipts/types.js";
 import { InvokeGateway } from "./invoke.js";
 import { AtomicAmountSchema } from "../listings/schemas.js";
 
@@ -25,6 +28,7 @@ export interface StoreAppDeps {
   readonly invoke: InvokeGateway;
   readonly stripe?: StripeFundingClient;
   readonly payouts?: SellerPayoutService;
+  readonly receipts?: ReceiptService;
   readonly publicBaseUrl?: string;
   readonly stripeSuccessUrl?: string;
   readonly stripeCancelUrl?: string;
@@ -156,6 +160,53 @@ export async function registerStoreRoutes(
       try {
         deps.listings.delete(req.params.id);
         return reply.status(204).send();
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+
+  // ── Public receipts (settle / payout surface for demos) ─────────────────
+  app.get("/v1/receipts", async (req, reply) => {
+    try {
+      if (deps.receipts === undefined) {
+        throw new StoreError(
+          "INTERNAL",
+          "receipt service is not configured",
+          503,
+        );
+      }
+      const query = PublicReceiptListQuerySchema.parse(req.query);
+      return deps.receipts.listRecent(query);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get<{ Params: { id: string } }>(
+    "/v1/receipts/:id",
+    async (req, reply) => {
+      try {
+        if (deps.receipts === undefined) {
+          throw new StoreError(
+            "INTERNAL",
+            "receipt service is not configured",
+            503,
+          );
+        }
+        const receipt = deps.receipts.getByIdOrTx(req.params.id);
+        const wantsHtml =
+          String((req.query as { format?: string }).format ?? "") === "html" ||
+          (typeof req.headers.accept === "string" &&
+            req.headers.accept.includes("text/html") &&
+            !req.headers.accept.includes("application/json"));
+        if (wantsHtml) {
+          return reply
+            .type("text/html; charset=utf-8")
+            .send(renderReceiptHtml(receipt));
+        }
+        return { receipt };
       } catch (err) {
         return sendError(reply, err);
       }
@@ -337,6 +388,12 @@ export async function registerStoreRoutes(
           ...(body.query !== undefined ? { query: body.query } : {}),
         });
 
+        const receiptUrl =
+          deps.publicBaseUrl !== undefined
+            ? `${deps.publicBaseUrl.replace(/\/$/, "")}/v1/receipts/${result.spend.id}`
+            : deps.receipts !== undefined
+              ? `/v1/receipts/${result.spend.id}`
+              : undefined;
         return reply.status(200).send({
           ok: true,
           replayed: result.replayed,
@@ -344,6 +401,7 @@ export async function registerStoreRoutes(
           upstreamStatus: result.upstreamStatus,
           balanceAfter: result.balanceAfter,
           payout: result.payout,
+          ...(receiptUrl !== undefined ? { receiptUrl } : {}),
           body: result.body,
         });
       } catch (err) {

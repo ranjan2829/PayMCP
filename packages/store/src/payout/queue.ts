@@ -174,6 +174,13 @@ export class SellerPayoutQueue {
     return row === undefined ? undefined : mapRow(row);
   }
 
+  findByTxHash(txHash: string): SellerPayout | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM seller_payouts WHERE tx_hash = ?`)
+      .get(txHash) as PayoutRow | undefined;
+    return row === undefined ? undefined : mapRow(row);
+  }
+
   getOrThrow(id: string): SellerPayout {
     const row = this.db
       .prepare(`SELECT * FROM seller_payouts WHERE id = ?`)
