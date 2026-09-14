@@ -55,12 +55,17 @@ export interface PaymentPayload {
   readonly payload: ExactEvmPayload | Readonly<Record<string, unknown>>;
 }
 
+/** Which settlement rail produced this receipt (x402 USDC or Visa VIC). */
+export type SettlementRail = "x402" | "visa";
+
 export interface SettlementResponse {
   readonly success: boolean;
   readonly transaction: string;
   readonly network: Caip2Network;
   readonly payer: string;
   readonly errorReason?: string;
+  /** Set by dual-rail paywall / VisaVicSettler when known. */
+  readonly rail?: SettlementRail;
 }
 
 export interface FacilitatorVerifyRequest {

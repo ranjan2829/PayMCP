@@ -25,7 +25,8 @@
     "bin",
     "SKILL.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

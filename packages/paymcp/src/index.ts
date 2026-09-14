@@ -6,6 +6,7 @@ export type {
   PaymentPayload,
   PaymentAccept,
   SettlementResponse,
+  SettlementRail,
   PaymentResource,
   Caip2Network,
 } from "./types/x402.js";
@@ -177,3 +178,58 @@ export {
   windowStartIso,
   emptyAccessControls,
 } from "./controls/index.js";
+
+
+export {
+  VisaVicSettler,
+  VisaHttpError,
+  VisaTransportError,
+  VisaTimeoutError,
+  isRetryableVisaError,
+  loadVisaVicConfigFromEnv,
+  parseVisaPaymentPayload,
+  HEADER_VISA_PAYMENT,
+  VISA_ENV_KEYS,
+  type VisaClientOptions,
+  type VisaSettleInput,
+  type VisaPaymentPayload,
+  type VisaSettlementResponse,
+  type VisaVicEnvConfig,
+} from "./settler/visa.js";
+
+export {
+  buildXPayToken,
+  canonicalizeQuery,
+} from "./settler/xpay.js";
+
+export {
+  resolveSettlementRail,
+  RailConfigError,
+  RailPreferenceSchema,
+  SettlementRailSchema,
+  type RailPreference,
+} from "./settler/rail.js";
+
+export {
+  TAP_TAGS,
+  TAP_ENV_KEYS,
+  TapVerificationError,
+  parseSignatureInputHeader,
+  parseSignatureHeader,
+  buildTapSignatureBase,
+  createTapVerifier,
+  staticTapKeyLookup,
+  createMemoryNonceCache,
+  loadTapConfigFromEnv,
+  tapAgentMiddleware,
+  HEADER_SIGNATURE,
+  HEADER_SIGNATURE_INPUT,
+  type TapTag,
+  type TapVerifyRequest,
+  type TapVerificationResult,
+  type TapKeyLookup,
+  type TapPublicKey,
+  type TapVerifier,
+  type TapEnvConfig,
+  type TapMiddlewareOptions,
+} from "./tap/index.js";
