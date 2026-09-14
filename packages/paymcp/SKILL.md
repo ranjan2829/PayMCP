@@ -15,7 +15,7 @@ Required env:
 
 ```bash
 export PAYMCP_FACILITATOR_URL=https://x402.org/facilitator   # or CDP: https://api.cdp.coinbase.com/platform/v2/x402
-export PAYMCP_PAY_TO=0xYourRecipient
+# export PAYMCP_PAY_TO=   # set real recipient in env
 export PAYMCP_NETWORK=eip155:84532                          # CAIP-2
 export PAYMCP_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
 # Optional for CDP auth:

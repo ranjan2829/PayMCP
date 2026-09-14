@@ -31,7 +31,7 @@ import { paymcpPaywall, loadConfigFromEnv, FacilitatorSettler } from "openapi-to
 
 ```bash
 export PAYMCP_FACILITATOR_URL=https://x402.org/facilitator
-export PAYMCP_PAY_TO=0xYourRecipientAddress
+# export PAYMCP_PAY_TO=   # set real recipient in env
 export PAYMCP_NETWORK=eip155:84532
 export PAYMCP_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
 ```

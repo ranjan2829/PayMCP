@@ -87,28 +87,15 @@ await runPaidMcpStdio({
 
   writeFileSync(join(out, "src/server.js"), serverSrc);
 
-  const envExample = `# Real x402 facilitator settlement — required
-PAYMCP_FACILITATOR_URL=https://x402.org/facilitator
-PAYMCP_PAY_TO=0xYourRecipientAddress
-PAYMCP_NETWORK=eip155:84532
-PAYMCP_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
-
-# Optional (CDP production facilitator — Base mainnet)
-# PAYMCP_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402
-# PAYMCP_FACILITATOR_AUTH_TOKEN=Bearer eyJ...
-# CDP_API_KEY_ID=
-# CDP_API_KEY_SECRET=
-
-# Optional
-# PAYMCP_ASSET_NAME=USDC
-# PAYMCP_MAX_TIMEOUT_SECONDS=60
-# PAYMCP_SCHEME=exact
-# PAYMCP_LEDGER_PATH=./paymcp-ledger.db
-# PAYMCP_DATABASE_URL=postgres://user:pass@localhost:5432/paymcp
-# PAYMCP_FACILITATOR_TIMEOUT_MS=15000
-# PAYMCP_FACILITATOR_MAX_RETRIES=2
-# PAYMCP_RATE_LIMIT_MAX=60
-# PAYMCP_RATE_LIMIT_WINDOW_MS=60000
+  const envExample = `# Real x402 facilitator settlement — set these in the environment (no placeholder secrets).
+# PAYMCP_FACILITATOR_URL
+# PAYMCP_PAY_TO
+# PAYMCP_NETWORK
+# PAYMCP_ASSET
+# Optional CDP: PAYMCP_FACILITATOR_AUTH_TOKEN CDP_API_KEY_ID CDP_API_KEY_SECRET
+# Optional: PAYMCP_ASSET_NAME PAYMCP_MAX_TIMEOUT_SECONDS PAYMCP_SCHEME
+# PAYMCP_LEDGER_PATH PAYMCP_DATABASE_URL PAYMCP_FACILITATOR_TIMEOUT_MS
+# PAYMCP_FACILITATOR_MAX_RETRIES PAYMCP_RATE_LIMIT_MAX PAYMCP_RATE_LIMIT_WINDOW_MS
 `;
   writeFileSync(join(out, ".env.example"), envExample);
 

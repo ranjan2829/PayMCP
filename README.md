@@ -84,14 +84,16 @@ Client ──402──► PayMCP (paywall / MCP)
 Mini **paid-agent-tools marketplace** on top of this adapter:
 
 - **Listings** — OpenAPI-backed tool catalog with atomic USDC/credit prices
-- **Buyer credits** — top-up → invoke → spend log (no `EVM_PRIVATE_KEY` on the happy path)
-- **Settle-on-success debit** — hold balance, proxy upstream, finalize debit only on 2xx
+- **Buyer credits** — Stripe Checkout → verified webhook → invoke → spend log (no buyer `EVM_PRIVATE_KEY`)
+- **Settle-on-success debit + seller payout** — hold balance, proxy upstream, finalize debit and pay listing `payTo` on 2xx
 - **Seller kit** — OpenAPI + prices → compile ops → register listing
 - **Seed** — demo echo/weather + live x402 docs for `https://grawwww.xyz/api/render/image` (0.10 USDC)
 
 ```bash
 pnpm --filter @paymcp/store seed
 pnpm --filter @paymcp/store dev          # http://127.0.0.1:8790
+pnpm --filter @paymcp/store cli fund-checkout buyer_demo 100
+# complete Stripe Checkout; webhook credits ledger; then:
 pnpm --filter @paymcp/store cli buyer-flow buyer_demo
 ```
 
@@ -106,7 +108,7 @@ Settlement **always** targets a real facilitator base URL. Boot is fail-fast (zo
 | Variable | Example |
 |----------|---------|
 | `PAYMCP_FACILITATOR_URL` | `https://x402.org/facilitator` |
-| `PAYMCP_PAY_TO` | `0xYourRecipientAddress` |
+| `PAYMCP_PAY_TO` | EVM recipient address (set in env; no placeholder) |
 | `PAYMCP_NETWORK` | `eip155:84532` (Base Sepolia) or `eip155:8453` (Base) |
 | `PAYMCP_ASSET` | USDC contract on that network |
 
@@ -157,7 +159,7 @@ Use a real facilitator and a real wallet. Prefer Sepolia first.
 
 ```bash
 export PAYMCP_FACILITATOR_URL=https://x402.org/facilitator
-export PAYMCP_PAY_TO=0xYourRecipient
+export PAYMCP_PAY_TO=   # set real 0x recipient in your shell / .env
 export PAYMCP_NETWORK=eip155:84532
 export PAYMCP_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
 pnpm --filter @paymcp/demo-api build
@@ -208,7 +210,7 @@ Set `PAYMCP_ASSET_NAME=USDC` on the server so the 402 `extra.name` / `extra.vers
 ```bash
 # terminal 1: local paymcp demo-api (real facilitator)
 export PAYMCP_FACILITATOR_URL=https://x402.org/facilitator
-export PAYMCP_PAY_TO=0xYourRecipient
+export PAYMCP_PAY_TO=   # set real 0x recipient in your shell / .env
 export PAYMCP_NETWORK=eip155:84532
 export PAYMCP_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e
 export PAYMCP_ASSET_NAME=USDC
@@ -220,7 +222,7 @@ pnpm buyer:probe
 
 # terminal 2: pay /echo (spends testnet USDC; refuses unless PAYMCP_LIVE=1)
 export PAYMCP_LIVE=1
-export EVM_PRIVATE_KEY=0xYourPayerKey
+export EVM_PRIVATE_KEY=   # set real key in your shell / .env — never commit
 export DEMO_API_URL=http://127.0.0.1:8787
 pnpm buyer:example
 ```
