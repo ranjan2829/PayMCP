@@ -44,6 +44,8 @@ export const SpendLogEntrySchema = z.object({
   idempotencyKey: z.string().min(1),
   requestId: z.string().nullable(),
   status: z.enum(["pending", "settled", "failed", "replayed"]),
+  /** Settlement rail recorded at settle time (default x402 for legacy rows). */
+  rail: z.enum(["x402", "visa"]).default("x402"),
   upstreamStatus: z.number().int().nullable(),
   errorReason: z.string().nullable(),
   createdAt: z.string().min(1),

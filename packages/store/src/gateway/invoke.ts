@@ -83,11 +83,13 @@ export class InvokeGateway {
       );
     }
 
+    const spendRail = listing.rail === "visa" ? "visa" : "x402";
     const begin = this.ledger.beginSpend({
       buyerId: req.buyerId,
       listingId: listing.id,
       amount: listing.price,
       idempotencyKey: req.idempotencyKey,
+      rail: spendRail,
       ...(req.requestId !== undefined ? { requestId: req.requestId } : {}),
     });
 

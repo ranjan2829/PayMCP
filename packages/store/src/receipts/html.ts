@@ -86,6 +86,7 @@ export function renderReceiptHtml(receipt: PublicReceipt): string {
   <div class="muted">${esc(receipt.networkLabel)}</div>
   <div class="amount">${esc(amount)} ${esc(receipt.asset)}</div>
   <div class="row"><span class="label">settle</span><span class="val ${settleClass}">${esc(receipt.settleStatus)}</span></div>
+  <div class="row"><span class="label">rail</span><span class="val">${esc(receipt.rail)}</span></div>
   <div class="row"><span class="label">payout</span><span class="val ${payoutClass}">${esc(receipt.payoutStatus)}</span></div>
   <div class="row"><span class="label">buyer</span><span class="val">${esc(receipt.buyer)}</span></div>
   <div class="row"><span class="label">listing</span><span class="val">${esc(receipt.listing.id)}</span></div>

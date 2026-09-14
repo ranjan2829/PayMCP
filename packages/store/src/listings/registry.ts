@@ -28,6 +28,7 @@ interface ListingRow {
   default_path: string;
   default_method: string;
   external_x402: number;
+  rail: string;
   tags_json: string;
   created_at: string;
   updated_at: string;
@@ -70,6 +71,7 @@ export class ListingRegistry {
       CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status);
       CREATE INDEX IF NOT EXISTS idx_listings_seller ON listings(seller_id);
     `);
+    ensureListingColumn(this.db, "rail", "TEXT NOT NULL DEFAULT 'x402'");
   }
 
   create(input: CreateListingInput): Listing {
@@ -94,8 +96,8 @@ export class ListingRegistry {
         `INSERT INTO listings (
           id, name, description, openapi_url, openapi_json, price, seller_id,
           pay_to, network, status, upstream_base_url, default_path, default_method,
-          external_x402, tags_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          external_x402, rail, tags_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -112,6 +114,7 @@ export class ListingRegistry {
         parsed.defaultPath,
         parsed.defaultMethod,
         parsed.externalX402 ? 1 : 0,
+        parsed.rail,
         JSON.stringify(parsed.tags),
         now,
         now,
@@ -173,6 +176,7 @@ export class ListingRegistry {
       parsed.externalX402 !== undefined
         ? parsed.externalX402
         : current.externalX402;
+    const rail = parsed.rail ?? current.rail;
     const tags = parsed.tags ?? current.tags;
 
     this.db
@@ -181,7 +185,7 @@ export class ListingRegistry {
           name = ?, description = ?, openapi_url = ?, openapi_json = ?,
           price = ?, pay_to = ?, network = ?, status = ?,
           upstream_base_url = ?, default_path = ?, default_method = ?,
-          external_x402 = ?, tags_json = ?, updated_at = ?
+          external_x402 = ?, rail = ?, tags_json = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -197,6 +201,7 @@ export class ListingRegistry {
         defaultPath,
         defaultMethod,
         externalX402 ? 1 : 0,
+        rail,
         JSON.stringify(tags),
         now,
         id,
@@ -281,10 +286,24 @@ function mapListingRow(row: ListingRow): Listing {
     defaultPath: row.default_path,
     defaultMethod: row.default_method,
     externalX402: row.external_x402 === 1,
+    rail: row.rail === "visa" || row.rail === "auto" ? row.rail : "x402",
     tags,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 
   return ListingSchema.parse(candidate);
+}
+
+function ensureListingColumn(
+  db: Database.Database,
+  column: string,
+  ddl: string,
+): void {
+  const cols = db.prepare(`PRAGMA table_info(listings)`).all() as {
+    name: string;
+  }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE listings ADD COLUMN ${column} ${ddl}`);
+  }
 }

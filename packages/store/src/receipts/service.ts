@@ -109,6 +109,7 @@ export class ReceiptService {
       },
       buyer: redactBuyerId(spend.buyerId),
       settleStatus: spend.status,
+      rail: spend.rail === "visa" ? "visa" : (listing?.rail === "visa" ? "visa" : "x402"),
       payoutStatus: payout?.status ?? "none",
       payoutTx,
       explorerUrl,
