@@ -298,6 +298,27 @@ export async function registerStoreRoutes(
     }
   });
 
+  app.get("/v1/funding/success", async (_req, reply) => {
+    return reply.type("text/html; charset=utf-8").send(`<!doctype html>
+<html><head><meta charset="utf-8"/><title>PayMCP — payment received</title>
+<style>body{font-family:ui-sans-serif,system-ui;background:#09090b;color:#fafafa;padding:48px;max-width:40rem;margin:0 auto}code{color:#a1a1aa}</style>
+</head><body>
+<h1>Payment received</h1>
+<p>Stripe Checkout completed. Credits mint after the signed webhook hits <code>/v1/webhooks/stripe</code> (usually a few seconds).</p>
+<p>Check balance: <code>GET /v1/balances/:buyerId</code></p>
+</body></html>`);
+  });
+
+  app.get("/v1/funding/cancel", async (_req, reply) => {
+    return reply.type("text/html; charset=utf-8").send(`<!doctype html>
+<html><head><meta charset="utf-8"/><title>PayMCP — checkout cancelled</title>
+<style>body{font-family:ui-sans-serif,system-ui;background:#09090b;color:#fafafa;padding:48px;max-width:40rem;margin:0 auto}code{color:#a1a1aa}</style>
+</head><body>
+<h1>Checkout cancelled</h1>
+<p>No charge. Start again with <code>POST /v1/funding/checkout</code>.</p>
+</body></html>`);
+  });
+
   // Explicit rejection of legacy faucet route
   app.post("/v1/top-up", async (_req, reply) => {
     return reply.status(410).send({
