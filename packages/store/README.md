@@ -171,3 +171,11 @@ No placeholder secret values in docs.
 - **No FakeSettler** — seller payout is a real USDC transfer (or facilitator settle adapter).
 - **Idempotency** — `Idempotency-Key` on invoke; funding idempotent on Stripe session id.
 - **Settle-on-2xx** — hold → upstream → debit + payout; non-2xx refunds the hold.
+
+## Fiat (Stripe)
+
+See [docs/FIAT_STRIPE.md](./docs/FIAT_STRIPE.md).
+
+## Fiat (Stripe)
+
+See [docs/FIAT_STRIPE.md](./docs/FIAT_STRIPE.md).
